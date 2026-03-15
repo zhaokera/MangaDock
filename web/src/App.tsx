@@ -6,11 +6,6 @@ import { startDownload, subscribeProgress, TaskStatus, getPlatforms, Platform } 
 
 // 平台颜色配置
 const PLATFORM_COLORS: Record<string, { primary: string; secondary: string; bg: string }> = {
-  bilibili: {
-    primary: '#00A1D6',
-    secondary: '#FB7299',
-    bg: 'from-[#00A1D6]/5 to-[#FB7299]/5',
-  },
   manhuagui: {
     primary: '#10B981',
     secondary: '#34D399',

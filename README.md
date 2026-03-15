@@ -1,10 +1,10 @@
 # MangaDock
 
-多平台漫画下载器，支持哔哩哔哩漫画、漫画柜等平台。
+多平台漫画下载器，支持漫画柜等平台。
 
 ## 功能特性
 
-- 🎯 多平台支持（哔哩哔哩漫画、漫画柜）
+- 🎯 多平台支持（漫画柜）
 - 📥 批量下载漫画章节
 - 📦 自动打包 ZIP 文件
 - 📊 实时下载进度显示
@@ -16,7 +16,6 @@
 ├── server.py           # FastAPI 后端服务
 ├── crawlers/           # 爬虫模块
 │   ├── base.py         # 爬虫基类
-│   ├── bilibili.py     # 哔哩哔哩漫画爬虫
 │   ├── manhuagui.py    # 漫画柜爬虫
 │   └── registry.py     # 爬虫注册表
 ├── web/                # React 前端
@@ -76,7 +75,6 @@ npm run dev
 
 | 平台 | URL 格式 |
 |------|----------|
-| 哔哩哔哩漫画 | `https://manga.bilibili.com/mc*/**` |
 | 漫画柜 | `https://www.manhuagui.com/comic/*/`*.html` |
 
 ## 使用方法

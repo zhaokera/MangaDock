@@ -7,11 +7,6 @@ interface DownloadProgressProps {
 
 // 平台显示配置
 const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string }> = {
-  bilibili: {
-    name: '哔哩哔哩漫画',
-    color: 'text-[#00A1D6]',
-    bg: 'bg-gradient-to-br from-[#00A1D6]/20 to-[#FB7299]/20',
-  },
   manhuagui: {
     name: '漫画柜',
     color: 'text-emerald-500',

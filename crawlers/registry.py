@@ -50,9 +50,7 @@ def get_crawler(url: str) -> BaseCrawler:
     for c in _crawlers.values():
         for pattern in c.URL_PATTERNS:
             # 提取域名提示
-            if "manga.bilibili" in pattern:
-                supported.append("哔哩哔哩漫画 (manga.bilibili.com)")
-            elif "manhuagui" in pattern:
+            if "manhuagui" in pattern:
                 supported.append("漫画柜 (manhuagui.com)")
 
     raise ValueError(f"不支持的 URL: {url}\n支持的平台: {', '.join(set(supported)) or '暂无'}")

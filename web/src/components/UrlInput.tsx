@@ -159,7 +159,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, disabled, platforms }) 
       {/* Example URL hints */}
       <div className="space-y-1 text-center text-xs text-gray-400">
         <p>支持的平台：{platforms.map(p => p.display_name).join('、')}</p>
-        <p>示例：https://manga.bilibili.com/mc36091/1656375</p>
+        <p>示例：https://www.manhuagui.com/comic/58667/868543.html</p>
       </div>
     </form>
   );
