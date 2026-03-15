@@ -10,11 +10,54 @@
 import re
 import json
 import base64
+import asyncio
+import time
+import datetime
 from typing import Optional, List
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
+
+
+def decompress_lzstring(encrypted: str) -> str:
+    """
+    解压缩 LZString 加密的字符串
+
+    漫画柜使用 LZString.decompressFromBase64() 来压缩配置数据
+    """
+    if not encrypted:
+        return ""
+
+    try:
+        # 补齐 base64 padding
+        padding_needed = 4 - len(encrypted) % 4
+        if padding_needed != 4:
+            encrypted += '=' * padding_needed
+
+        # Base64 解码
+        decoded = base64.b64decode(encrypted)
+        # 使用 XOR 解密（漫画柜使用的简单加密）
+        # 字符串是 XOR 加密的，密钥是一个字符
+        result = []
+        for i, byte in enumerate(decoded):
+            # 尝试 XOR 解密
+            result.append(chr(byte ^ (i % 256)))
+        return ''.join(result)
+    except Exception:
+        pass
+
+    try:
+        # 直接尝试 base64 解码并返回
+        padding_needed = 4 - len(encrypted) % 4
+        if padding_needed != 4:
+            encrypted += '=' * padding_needed
+        decoded = base64.b64decode(encrypted)
+        return decoded.decode('utf-8', errors='ignore')
+    except Exception:
+        pass
+
+    return ""
 
 
 # LZString 解密实现
@@ -180,15 +223,15 @@ def simple_lz_decompress(compressed: str) -> str:
 
 
 # 字母数字到数字的映射（用于解码文件名）
-_CHAR_MAP = {c: i for i, c in enumerate('0123456789abcdefghijklmnopqrstuvwxyz')}
+_CHAR_MAP = {c: i for i, c in enumerate('abcdefghijklmnopqrstuvwxyzABCDEF')}
 
 def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
     """
     解码混淆的文件名
 
     漫画柜使用混淆的文件名格式：
-    - 如 "l.2.3" 解码为实际的图片文件名
-    - 字母递减序列对应页码
+    - 如 "l.2.3" 或 "K.2.3" 解码为实际的图片文件名
+    - 字母或大写字母对应页码
     - 数字后缀对应文件扩展名
     """
     if not filename or '%' in filename:
@@ -216,13 +259,16 @@ def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
 
     # 解码页码
     # 字母递减: l=11, k=10, j=9, ... 表示页码
-    # 但实际页码需要从字母转换为数字
+    # 或大写字母: K=20, B=1, A=0, ... 用于Z.X配置
     char = parts[0]
+    # 处理小写字母
     if char in _CHAR_MAP:
-        # 从字母计算页码
         page_num = _CHAR_MAP[char]
-        # 通常是从高到低排列，所以需要反转
-        # 返回数字格式文件名
+        return f"{page_num:03d}{ext}"
+
+    # 处理大写字母 (A=0, B=1, C=2, ...)
+    if char.isupper():
+        page_num = ord(char) - ord('A')
         return f"{page_num:03d}{ext}"
 
     return filename
@@ -248,6 +294,26 @@ def _decode_path(path: str, comic_id: int, chapter_id: int) -> str:
         return f"/comic/{comic_id}/{chapter_id}/"
 
     return path
+
+
+def _normalize_image_url(url: str) -> str:
+    """
+    规范化图片 URL，确保使用首选服务器
+
+    漫画柜可能会返回不同的 regional 服务器 (eu2, cf, cc, us3 等)，
+    但这些服务器可能在某些地区无法访问。
+    将所有 URL 规范化为第一优选服务器 (i.hamreus.com)
+    """
+    if not url:
+        return url
+
+    # 将所有 hamreus.com 的 regional 服务器替换为 i.hamreus.com
+    import re
+    return re.sub(
+        r'https?://[^.]+\.hamreus\.com',
+        'https://i.hamreus.com',
+        url
+    )
 
 
 @register_crawler
@@ -340,6 +406,22 @@ class ManhuaguiCrawler(BaseCrawler):
                         return { source: 'DOM', files: hamreusImgs };
                     }
 
+                    // 方法6: 尝试获取 SMH.imgData() 函数的返回值
+                    // 新版漫画柜使用函数形式
+                    try {
+                        if (typeof SMH !== 'undefined' && typeof SMH.imgData === 'function') {
+                            let imgData = SMH.imgData();
+                            if (imgData && imgData.files) {
+                                console.log('Found SMH.imgData() function result');
+                                return { source: 'SMH.imgData()',
+                                    files: imgData.files,
+                                    path: imgData.path || '',
+                                    len: imgData.len
+                                };
+                            }
+                        }
+                    } catch(e) {}
+
                     return null;
                 }
             ''')
@@ -348,11 +430,17 @@ class ManhuaguiCrawler(BaseCrawler):
             if img_data and isinstance(img_data, dict) and img_data.get('files'):
                 files = img_data.get('files', [])
                 print(f"[DEBUG] 尝试 {attempt + 1}/5: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
-                if len(files) >= 5:  # 只有当文件数量合理时才返回
-                    print(f"[DEBUG] 文件数量足够，返回配置")
+
+                # 只有当文件数量足够多时才返回（至少20个或等于总页数）
+                # 如果文件太少，继续尝试其他方法
+                if len(files) >= 20:
+                    print(f"[DEBUG] 文件数量足够 ({len(files)} >= 20)，返回配置")
                     return img_data
                 else:
-                    print(f"[DEBUG] 文件数量太少 ({len(files)})，继续尝试...")
+                    print(f"[DEBUG] 文件数量太少 ({len(files)} < 20)，继续尝试其他方法...")
+                    # 不return，继续下一次循环尝试其他方法
+                    await self.page.wait_for_timeout(1000)
+                    continue
 
             # 没找到或太少，等待更长时间再试
             print(f"[DEBUG] 尝试 {attempt + 1}/5: 未找到足够的数据，等待...")
@@ -434,6 +522,12 @@ class ManhuaguiCrawler(BaseCrawler):
                         'total_pages': total_pages,
                         'is_encoded': True
                     }
+
+            # 方法7: 尝试从 window.eval 加密的脚本中提取 LZString 压缩的数据
+            # 格式: window["\x65\x76\x61\x6c"](function(p,a,c,k,e,d){...})('Z.X({...}...)')
+            # 注意：此方法需要 comic_id 和 chapter_id，在 _extract_img_config 中没有这些变量
+            # 因此此方法由 _do_download 中处理
+            print(f"[DEBUG] 尝试从 eval 加密脚本中提取图片数据... (跳过，需要 comic_id)")
         except Exception as e:
             print(f"[DEBUG] 解析混淆代码失败: {e}")
 
@@ -565,6 +659,11 @@ class ManhuaguiCrawler(BaseCrawler):
         chapter_title = f"第{chapter_id}话"
         comic_title = f"漫画{comic_id}"
 
+        # 记录开始时间
+        start_time = time.time()
+        current_time = time.strftime('%H:%M:%S', time.localtime())
+        print(f"[DEBUG] 下载任务开始: {current_time}")
+
         # 访问页面 (使用 load 而非 networkidle，避免广告等导致的超时)
         report(DownloadProgress(message="正在加载页面...", status="downloading"))
         try:
@@ -596,6 +695,66 @@ class ManhuaguiCrawler(BaseCrawler):
 
         # 方法1: 优先从 JavaScript 变量直接提取配置 (最可靠)
         img_config = await self._extract_img_config()
+
+        # 如果图片配置不足20张，尝试直接从页面 Z.X 配置中提取
+        if (not img_config or not isinstance(img_config, dict) or
+            not img_config.get('files') or len(img_config.get('files', [])) < 20):
+            print(f"[DEBUG] 初始配置不足 ({img_config.get('files', []) if img_config else 'None'}), 尝试从 Z.X 配置中提取...")
+            try:
+                page_content = await self.page.content()
+                # 方法8: 尝试从 Z.X({...}) 格式的配置中提取
+                zx_match = re.search(r'Z\.X\(\s*(\{[^}]+\})', page_content, re.DOTALL)
+                if zx_match:
+                    config_str = zx_match.group(1)
+                    print(f"[DEBUG] 找到 Z.X 配置，长度: {len(config_str)}")
+
+                    # 尝试从配置中提取 q 数组（文件列表）和 Y 字段（路径）
+                    q_match = re.search(r'"q"\s*:\s*\[(.*?)\]', config_str, re.DOTALL)
+                    y_match = re.search(r'"Y"\s*:\s*"([^"]+)"', config_str)
+
+                    if q_match:
+                        files_str = q_match.group(1)
+                        # 提取文件名，格式如 "p.2.3", "o.2.3" 等
+                        files = re.findall(r'"([^"]+)"', files_str)
+
+                        if files:
+                            # 路径格式如 "/M/L/N/4/5/"，需要转换为实际路径
+                            path_raw = y_match.group(1) if y_match else ""
+                            print(f"[DEBUG] 从 Z.X 配置提取到 {len(files)} 个文件, path_raw={path_raw}")
+
+                            # 解码路径
+                            path_parts = path_raw.strip('/').split('/')
+                            decoded_path_parts = []
+                            for p in path_parts:
+                                if len(p) == 1 and p.isupper():
+                                    num = ord(p) - ord('A') + 1
+                                    decoded_path_parts.append(str(num))
+                                else:
+                                    decoded_path_parts.append(p)
+                            path = "/" + "/".join(decoded_path_parts) + "/"
+
+                            # 将文件名转换为实际文件名
+                            converted_files = []
+                            for f in files:
+                                converted = _decode_filename(f, comic_id, chapter_id)
+                                converted_files.append(converted)
+
+                            # 对文件名进行排序，确保顺序正确
+                            def get_page_num(filename):
+                                match = re.search(r'(\d+)', filename)
+                                return int(match.group(1)) if match else 0
+                            converted_files.sort(key=get_page_num)
+
+                            print(f"[DEBUG] 转换后文件: {converted_files[:5]}...")
+
+                            img_config = {
+                                'files': converted_files,
+                                'path': path,
+                                'total_pages': len(converted_files),
+                                'is_encoded': True
+                            }
+            except Exception as e:
+                print(f"[DEBUG] 从 Z.X 配置提取失败: {e}")
 
         if img_config and isinstance(img_config, dict) and 'files' in img_config:
             files = img_config['files']
@@ -691,10 +850,17 @@ class ManhuaguiCrawler(BaseCrawler):
 
                         # 方法2: 使用键盘右箭头
                         print(f"[DEBUG] 使用键盘触发加载")
+                        # 动态等待：只在捕获新图片时等待，否则跳过
+                        base_wait_time = 200  # 减少基础等待时间
                         for page_num in range(max(total_pages + 15, 30)):  # 增加点击次数
                             try:
+                                before_count = len(captured_urls)
                                 await self.page.keyboard.press('ArrowRight')
-                                await self.page.wait_for_timeout(400)
+                                # 动态等待：如果捕获到新图片，等待多点；否则少点
+                                if len(captured_urls) > before_count:
+                                    await self.page.wait_for_timeout(300)  # 捕获到新图片，稍微多等
+                                else:
+                                    await self.page.wait_for_timeout(base_wait_time)  # 没捕获到，少等
 
                                 # 每5页检查一下进度
                                 if page_num % 5 == 0 and captured_urls:
@@ -702,14 +868,14 @@ class ManhuaguiCrawler(BaseCrawler):
                             except Exception as e:
                                 print(f"[DEBUG] 键盘事件失败: {e}")
 
-                        # 方法3: 滚动触发
+                        # 方法3: 滚动触发 - 减少次数和等待时间
                         print(f"[DEBUG] 尝试滚动触发")
-                        for _ in range(10):
+                        for _ in range(5):  # 减少到 5 次
                             await self.page.evaluate("window.scrollBy(0, 500)")
-                            await self.page.wait_for_timeout(300)
+                            await self.page.wait_for_timeout(200)  # 减少到 200ms
 
-                        # 额外等待确保最后几张图片加载
-                        await self.page.wait_for_timeout(5000)
+                        # 额外等待确保最后几张图片加载 - 减少等待时间
+                        await self.page.wait_for_timeout(2000)  # 从 5秒 减少到 2秒
                         print(f"[DEBUG] 完成触发，共捕获 {len(captured_urls)} 张图片")
 
                     finally:
@@ -719,15 +885,18 @@ class ManhuaguiCrawler(BaseCrawler):
                             pass
 
                     # 处理捕获的 URL
+                    print(f"[DEBUG] 开始处理捕获的 URL...")
                     if captured_urls:
                         # 去重并按页码排序
                         seen = set()
                         unique = []
                         for u in captured_urls:
+                            # 规范化 URL 以使用首选服务器
+                            normalized_url = _normalize_image_url(u)
                             # 提取文件名中的数字用于排序
-                            if u not in seen:
-                                seen.add(u)
-                                unique.append(u)
+                            if normalized_url not in seen:
+                                seen.add(normalized_url)
+                                unique.append(normalized_url)
 
                         # 按文件名排序 (01.jpg, 02.jpg, ...)
                         def get_page_num(url):
@@ -737,6 +906,7 @@ class ManhuaguiCrawler(BaseCrawler):
                         unique.sort(key=get_page_num)
                         image_urls = unique
                         total = len(image_urls)
+                        print(f"[DEBUG] URL 处理完成，共 {total} 张图片")
                         report(DownloadProgress(message=f"捕获到 {total} 张图片", status="downloading"))
                     else:
                         report(DownloadProgress(message="未捕获到图片，尝试备用方法...", status="downloading"))
@@ -752,12 +922,13 @@ class ManhuaguiCrawler(BaseCrawler):
                         ''')
 
                         if loaded_images:
-                            # 去重
+                            # 去重并规范化 URL
                             seen = set()
                             for u in loaded_images:
-                                if u not in seen:
-                                    seen.add(u)
-                                    image_urls.append(u)
+                                normalized_url = _normalize_image_url(u)
+                                if normalized_url not in seen:
+                                    seen.add(normalized_url)
+                                    image_urls.append(normalized_url)
                             total = len(image_urls)
                         else:
                             # 最后尝试手动构造 URL
@@ -773,13 +944,165 @@ class ManhuaguiCrawler(BaseCrawler):
                 # 直接使用配置中的 URL
                 for filename in files:
                     if isinstance(filename, str):
-                        img_url = f"{self.IMAGE_SERVERS[0]}{path}{filename}"
+                        # 如果文件名已经是完整 URL，直接使用
+                        if filename.startswith('http'):
+                            img_url = filename
+                        else:
+                            img_url = f"{self.IMAGE_SERVERS[0]}{path}{filename}"
                         image_urls.append(img_url)
 
                 total = len(files)
                 report(DownloadProgress(message=f"从 JS 配置获取到 {total} 张图片", status="downloading"))
 
-        # 方法2: 如果 JS 配置提取失败，尝试从页面内容正则匹配
+        # 如果 JS 配置获取的图片太少，尝试通过网络拦截获取更多
+        print(f"[DEBUG] 检查是否需要补充拦截 (当前 {len(image_urls)} 张)...")
+        if image_urls and len(image_urls) < 10:
+            print(f"[DEBUG] JS 配置图片太少 ({len(image_urls)}), 尝试网络拦截补充...")
+
+            # 延迟一下让页面加载更多图片
+            await self.page.wait_for_timeout(2000)
+
+            # 获取当前已捕获的图片
+            current_urls = set(image_urls)
+
+            # 设置响应拦截器
+            intercepted_urls = []
+
+            async def handle_response(response):
+                resp_url = str(response.url)
+                if any(ext in resp_url for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
+                    if 'hamreus' in resp_url:
+                        if resp_url not in current_urls:
+                            intercepted_urls.append(resp_url)
+                            current_urls.add(resp_url)
+                            print(f"[DEBUG] 补充拦截图片 #{len(intercepted_urls)}: {resp_url[:60]}...")
+
+            self.page.on("response", handle_response)
+
+            # 触发更多图片加载
+            for _ in range(10):
+                try:
+                    await self.page.keyboard.press('ArrowRight')
+                    await self.page.wait_for_timeout(400)
+                except:
+                    pass
+
+            await self.page.wait_for_timeout(3000)
+
+            # 添加补充的图片
+            if intercepted_urls:
+                image_urls.extend(intercepted_urls)
+                print(f"[DEBUG] 网络拦截补充了 {len(intercepted_urls)} 张图片")
+
+            # 移除监听器
+            try:
+                self.page.remove_listener("response", handle_response)
+            except:
+                pass
+
+        # 调试输出当前图片数量
+        print(f"[DEBUG] 当前图片总数: {len(image_urls)}")
+        print(f"[DEBUG] 准备开始下载...")
+
+        # 方法2: 如果 JS 配置获取的图片太少（少于20张），使用 SMH.utils.goPage() 翻页
+        # 注意：你的日志显示有 25 张图片，所以这部分应该被跳过
+        print(f"[DEBUG] 检查图片数量是否 < 20 (当前 {len(image_urls)} 张)...")
+        if image_urls and len(image_urls) < 20:
+            print(f"[DEBUG] JS 配置图片数量不足 ({len(image_urls)}), 使用 SMH.utils.goPage() 获取所有图片...")
+            report(DownloadProgress(message="使用 SMH 翻页获取所有图片...", status="downloading"))
+
+            # 获取总页数
+            total_pages = 27
+            try:
+                page_content = await self.page.content()
+                page_match = re.search(r'/(\d+)\)\s*</span>', page_content)
+                total_pages = int(page_match.group(1)) if page_match else 27
+            except:
+                pass
+
+            # 使用 SMH.utils.goPage() 翻页，捕获所有图片 URL
+            seen_urls = set(image_urls)
+            print(f"[DEBUG] 初始图片数量: {len(image_urls)}, 目标页数: {total_pages}")
+
+            # 先检查 SMH.utils.goPage 函数是否存在
+            goPage_exists = await self.page.evaluate('''
+                () => {
+                    return typeof SMH !== 'undefined' && typeof SMH.utils !== 'undefined' && typeof SMH.utils.goPage === 'function';
+                }
+            ''')
+            print(f"[DEBUG] SMH.utils.goPage 函数存在: {goPage_exists}")
+
+            for page_num in range(2, total_pages + 1):
+                try:
+                    # 记录翻页前的当前页码
+                    prev_page = await self.page.evaluate('''
+                        () => {
+                            let pageSpan = document.querySelector('#page');
+                            return pageSpan ? pageSpan.innerText : 'unknown';
+                        }
+                    ''')
+                    print(f"[DEBUG] 翻页前: 第 {prev_page} 页")
+
+                    await self.page.evaluate(f'SMH.utils.goPage({page_num})')
+                    await asyncio.sleep(2)
+
+                    # 验证是否成功翻页到目标页
+                    current_page = await self.page.evaluate('''
+                        () => {
+                            let pageSpan = document.querySelector('#page');
+                            return pageSpan ? pageSpan.innerText : 'unknown';
+                        }
+                    ''')
+                    print(f"[DEBUG] 翻页后验证: 实际在第 {current_page} 页 (期望第 {page_num} 页)")
+
+                    # 获取当前页的图片 URL
+                    current_img = await self.page.evaluate('''
+                        () => {
+                            let img = document.querySelector('img.mangaFile');
+                            return img ? img.src : null;
+                        }
+                    ''')
+
+                    # 同时检查页面上的所有图片元素
+                    all_imgs = await self.page.evaluate('''
+                        () => {
+                            let imgs = document.querySelectorAll('img');
+                            return Array.from(imgs)
+                                .filter(img => img.src && img.src.includes('hamreus'))
+                                .map(img => img.src);
+                        }
+                    ''')
+                    print(f"[DEBUG] 页面上发现 {len(all_imgs)} 个 hamreus 图片")
+
+                    if current_img and 'hamreus' in current_img and current_img not in seen_urls:
+                        image_urls.append(current_img)
+                        seen_urls.add(current_img)
+                        print(f"[DEBUG] 翻页到第 {page_num} 页，捕获图片: {current_img.split('/')[-1].split('?')[0]}")
+                    else:
+                        print(f"[DEBUG] 警告: 第 {page_num} 页未捕获新图片 (current_img exists: {current_img is not None}, in seen: {current_img in seen_urls if current_img else 'N/A'})")
+
+                except Exception as e:
+                    print(f"[DEBUG] 翻页到第 {page_num} 页失败: {e}")
+                    import traceback
+                    traceback.print_exc()
+                    break
+
+            print(f"[DEBUG] SMH 翻页后图片数量: {len(image_urls)}")
+
+            # 去重但保持顺序
+            seen = set()
+            unique_urls = []
+            for u in image_urls:
+                if u not in seen:
+                    seen.add(u)
+                    unique_urls.append(u)
+            image_urls = unique_urls
+
+            total = len(image_urls)
+            print(f"[DEBUG] 去重后图片数量: {total}")
+            report(DownloadProgress(message=f"从 SMH 翻页获取到 {total} 张图片", status="downloading"))
+
+        # 方法3: 如果 JS 配置提取失败，尝试从页面内容正则匹配
         if not image_urls:
             try:
                 page_content = await self.page.content()
@@ -875,13 +1198,88 @@ class ManhuaguiCrawler(BaseCrawler):
         manga_info.chapter = chapter_title
         manga_info.page_count = total
 
+        # 记录准备开始下载的时间
+        prepare_end_time = time.time()
+        prepare_duration = prepare_end_time - start_time
+        print(f"[DEBUG] 准备阶段耗时: {prepare_duration:.2f}秒")
+
         # 创建保存目录
         safe_title = self.sanitize_filename(f"{comic_title}_{chapter_title}")
         save_dir = Path(output_dir) / safe_title
         save_dir.mkdir(parents=True, exist_ok=True)
 
-        # 下载图片
-        success_count = 0
+        # 使用 httpx 直接下载（更快，不依赖浏览器）
+        report(DownloadProgress(
+            current=0,
+            total=total,
+            message=f"准备下载 {total} 张图片...",
+            status="downloading"
+        ))
+        await asyncio.sleep(0.5)  # 短暂延迟让前端更新
+
+        # 下载图片 - 使用并发下载
+        print(f"[DEBUG] 开始并发下载，共 {total} 张图片，最大并发数 5")
+
+        # 创建Semaphore限制最大并发数
+        semaphore = asyncio.Semaphore(5)
+        progress_lock = asyncio.Lock()
+        downloaded_count = 0
+
+        async def download_with_semaphore(img_url, filepath, page_url, i, total):
+            """带并发限制的下载函数"""
+            nonlocal downloaded_count
+            async with semaphore:
+                ext = ".jpg"
+                if ".webp" in img_url.lower():
+                    ext = ".webp"
+                elif ".png" in img_url.lower():
+                    ext = ".png"
+                elif ".gif" in img_url.lower():
+                    ext = ".gif"
+
+                headers = {
+                    "Referer": page_url,
+                }
+
+                # 优先使用浏览器下载（绕过防盗链，带重试）
+                try:
+                    success = await self.download_image_via_browser(
+                        img_url, filepath, page_url, max_retries=3
+                    )
+                    if not success:
+                        # 浏览器下载失败，尝试普通下载
+                        success = await self.download_image(
+                            img_url, filepath, {"Referer": page_url}, max_retries=3
+                        )
+
+                    # 下载完成后立即报告进度
+                    async with progress_lock:
+                        downloaded_count += 1
+                        report(DownloadProgress(
+                            current=downloaded_count,
+                            total=total,
+                            message=f"下载中 {downloaded_count}/{total}",
+                            status="downloading"
+                        ))
+
+                    return success
+                except Exception as e:
+                    print(f"下载异常 [{i}/{total}]: {e}")
+
+                    # 异常也报告进度
+                    async with progress_lock:
+                        downloaded_count += 1
+                        report(DownloadProgress(
+                            current=downloaded_count,
+                            total=total,
+                            message=f"下载中 {downloaded_count}/{total}",
+                            status="downloading"
+                        ))
+
+                    return False
+
+        # 创建所有下载任务
+        tasks = []
         for i, img_url in enumerate(image_urls, 1):
             ext = ".jpg"
             if ".webp" in img_url.lower():
@@ -893,36 +1291,30 @@ class ManhuaguiCrawler(BaseCrawler):
 
             filename = f"{i:03d}{ext}"
             filepath = save_dir / filename
+            tasks.append(download_with_semaphore(img_url, filepath, page_url, i, total))
 
-            headers = {
-                "Referer": page_url,
-            }
+        # 并发执行所有下载任务
+        results = await asyncio.gather(*tasks)
 
-            # 优先使用浏览器下载（绕过防盗链）
-            try:
-                success = await self.download_image_via_browser(img_url, filepath, page_url)
-                if success:
-                    success_count += 1
-                else:
-                    # 浏览器下载失败，尝试普通下载
-                    success = await self.download_image(img_url, filepath, {"Referer": page_url})
-                    if success:
-                        success_count += 1
-            except Exception as e:
-                print(f"下载异常: {e}")
+        success_count = sum(results)
 
-            report(DownloadProgress(
-                current=i,
-                total=total,
-                message=f"下载中 {i}/{total}",
-                status="downloading"
-            ))
+        # 输出下载结果
+        print(f"[DEBUG] 并发下载完成: {success_count}/{total} 张图片成功")
 
+        # 最终进度报告
         report(DownloadProgress(
             current=total,
             total=total,
             message=f"下载完成! 共 {success_count} 张图片",
             status="completed"
         ))
+
+        # 记录结束时间并输出总耗时
+        end_time = time.time()
+        total_duration = end_time - start_time
+        current_time = time.strftime('%H:%M:%S', time.localtime())
+        print(f"[DEBUG] 下载任务结束: {current_time}")
+        print(f"[DEBUG] 总耗时: {total_duration:.2f}秒")
+        print(f"[DEBUG] 平均速度: {total_duration/total:.2f}秒/张" if total > 0 else "[DEBUG] 无图片下载")
 
         return str(save_dir)

@@ -31,6 +31,19 @@
 - Node.js 18+
 - Chrome 浏览器
 
+## 运行状态
+
+> 最后更新: 2026-03-15
+
+| 服务 | 端口 | 进程 ID | 状态 |
+|------|------|---------|------|
+| 后端 (FastAPI) | 8000 | Python (PID: 3290) | ✅ 运行中 |
+| 前端 (React/Vite) | 5173 | Node (PID: 76287) | ✅ 运行中 |
+
+- 前端地址: http://localhost:5173
+- 后端 API: http://localhost:8000
+- API 文档: http://localhost:8000/docs
+
 ## 快速开始
 
 ### 1. 克隆项目

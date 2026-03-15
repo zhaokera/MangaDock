@@ -6,6 +6,7 @@ FastAPI 后端 + SSE 进度推送
 """
 
 import asyncio
+import json
 import os
 import re
 import zipfile
@@ -300,7 +301,7 @@ async def stream_progress(task_id: str):
                 "error": task.error
             }
 
-            yield f"data: {data}\n\n"
+            yield f"data: {json.dumps(data)}\n\n"
 
             if task.status in ("completed", "failed"):
                 break
