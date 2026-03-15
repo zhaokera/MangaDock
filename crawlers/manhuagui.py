@@ -287,84 +287,157 @@ class ManhuaguiCrawler(BaseCrawler):
         Returns:
             dict: 包含 files (图片文件列表) 和 path (路径前缀) 的字典
         """
-        # 等待 JavaScript 执行完成
-        await self.page.wait_for_timeout(1000)
+        # 等待 JavaScript 执行完成 (增加等待时间让 packer 解码)
+        await self.page.wait_for_timeout(3000)
 
-        img_data = await self.page.evaluate('''
-            () => {
-                // 方法1: 尝试 SMH.imgData (主要方式)
-                if (typeof SMH !== 'undefined' && SMH.imgData && SMH.imgData.files) {
-                    return SMH.imgData;
-                }
+        # 多次尝试读取 SMH.imgData，因为 packer 解码需要时间
+        for attempt in range(5):
+            img_data = await self.page.evaluate('''
+                () => {
+                    // 方法1: 尝试 SMH.imgData (主要方式)
+                    if (typeof SMH !== 'undefined' && SMH.imgData && SMH.imgData.files) {
+                        console.log('Found SMH.imgData');
+                        return { source: 'SMH.imgData', files: SMH.imgData.files, path: SMH.imgData.path || '', len: SMH.imgData.len };
+                    }
 
-                // 方法2: 尝试 chapterImages / chapterPath 变量
-                if (typeof chapterImages !== 'undefined' && chapterImages.length > 0) {
-                    return {
-                        files: chapterImages,
-                        path: typeof chapterPath !== 'undefined' ? chapterPath : ''
-                    };
-                }
+                    // 方法2: 尝试 chapterImages / chapterPath 变量
+                    if (typeof chapterImages !== 'undefined' && chapterImages.length > 0) {
+                        console.log('Found chapterImages');
+                        return {
+                            source: 'chapterImages',
+                            files: chapterImages,
+                            path: typeof chapterPath !== 'undefined' ? chapterPath : ''
+                        };
+                    }
 
-                // 方法3: 尝试 window.imgData
-                if (typeof window.imgData !== 'undefined' && window.imgData.files) {
-                    return window.imgData;
-                }
+                    // 方法3: 尝试 window.imgData
+                    if (typeof window.imgData !== 'undefined' && window.imgData.files) {
+                        console.log('Found window.imgData');
+                        return { source: 'window.imgData', files: window.imgData.files, path: window.imgData.path || '' };
+                    }
 
-                // 方法4: 尝试从 window 对象中查找包含 files 数组的配置
-                for (let key in window) {
-                    try {
-                        let val = window[key];
-                        if (val && typeof val === 'object' && Array.isArray(val.files) && val.files.length > 0) {
-                            return val;
+                    // 方法4: 尝试从 window 对象中查找包含 files 数组的配置
+                    for (let key in window) {
+                        try {
+                            let val = window[key];
+                            if (val && typeof val === 'object' && Array.isArray(val.files) && val.files.length > 0) {
+                                console.log('Found in window.' + key);
+                                return { source: 'window.' + key, files: val.files, path: val.path || '' };
+                            }
+                        } catch(e) {}
+                    }
+
+                    // 方法5: 查找页面上已加载的图片
+                    let imgs = document.querySelectorAll('img');
+                    let hamreusImgs = [];
+                    for (let img of imgs) {
+                        if (img.src && img.src.includes('hamreus')) {
+                            hamreusImgs.push(img.src);
                         }
-                    } catch(e) {}
+                    }
+                    if (hamreusImgs.length > 0) {
+                        console.log('Found ' + hamreusImgs.length + ' images in DOM');
+                        return { source: 'DOM', files: hamreusImgs };
+                    }
+
+                    return null;
                 }
+            ''')
 
-                return null;
-            }
-        ''')
+            # 只有当 img_data 包含有效的 files 数组时才返回
+            if img_data and isinstance(img_data, dict) and img_data.get('files'):
+                files = img_data.get('files', [])
+                print(f"[DEBUG] 尝试 {attempt + 1}/5: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
+                if len(files) >= 5:  # 只有当文件数量合理时才返回
+                    print(f"[DEBUG] 文件数量足够，返回配置")
+                    return img_data
+                else:
+                    print(f"[DEBUG] 文件数量太少 ({len(files)})，继续尝试...")
 
-        # 只有当 img_data 包含有效的 files 数组时才返回
-        if img_data and isinstance(img_data, dict) and img_data.get('files'):
-            return img_data
+            # 没找到或太少，等待更长时间再试
+            print(f"[DEBUG] 尝试 {attempt + 1}/5: 未找到足够的数据，等待...")
+            await self.page.wait_for_timeout(1000)
 
-        # 方法5: 从页面 HTML 中解析混淆的 JavaScript 配置
-        # 漫画柜使用 eval + packer 混淆，需要从页面中提取原始数据
+        # 方法6: 从页面 HTML 中解析混淆的 JavaScript 配置
         try:
             page_content = await self.page.content()
+            print(f"[DEBUG] 页面内容长度: {len(page_content)}")
 
             # 查找页面中的页数信息
             page_match = re.search(r'/(\d+)\)\s*</span>', page_content)
-            if page_match:
-                total_pages = int(page_match.group(1))
-            else:
-                total_pages = 0
+            total_pages = int(page_match.group(1)) if page_match else 0
+            print(f"[DEBUG] 从页面提取到总页数: {total_pages}")
+
+            # 尝试解析 V.S({...}) 格式的配置
+            # 格式: V.S({"w":4,"v":"u","p":["o.2.3",...],"J":"/I/5/6/4/7/",...})
+            vs_match = re.search(r'V\.S\(\{[^}]*"p"\s*:\s*\[(.*?)\][^}]*\}\)', page_content, re.DOTALL)
+            if vs_match:
+                config_str = vs_match.group(0)
+                print(f"[DEBUG] 找到 V.S 配置: {config_str[:200]}...")
+
+                # 提取 p 数组（图片文件列表）
+                p_match = re.search(r'"p"\s*:\s*\[(.*?)\]', config_str, re.DOTALL)
+                j_match = re.search(r'"J"\s*:\s*"([^"]*)"', config_str)
+
+                if p_match:
+                    files_str = p_match.group(1)
+                    files = re.findall(r'"([^"]+)"', files_str)
+
+                    if files:
+                        path = j_match.group(1) if j_match else ""
+                        print(f"[DEBUG] 从 V.S 配置提取到 {len(files)} 个文件, path={path}")
+                        return {
+                            'files': files,
+                            'path': path,
+                            'total_pages': total_pages or len(files),
+                            'is_encoded': True
+                        }
+
+            # 尝试直接从页面的 SMH 变量读取（在 JavaScript 执行后）
+            # 有时 SMH.imgData 会在页面完全加载后才被设置
+            smh_check = await self.page.evaluate('''
+                () => {
+                    // 检查所有可能的配置位置
+                    if (typeof SMH !== 'undefined') {
+                        if (SMH.imgData && SMH.imgData.files) {
+                            return { source: 'SMH.imgData', ...SMH.imgData };
+                        }
+                        // 有时配置直接在 SMH 上
+                        for (let key in SMH) {
+                            let val = SMH[key];
+                            if (val && typeof val === 'object' && Array.isArray(val.files)) {
+                                return { source: 'SMH.' + key, ...val };
+                            }
+                        }
+                    }
+                    return null;
+                }
+            ''')
+            if smh_check and smh_check.get('files'):
+                print(f"[DEBUG] 从 {smh_check.get('source')} 获取到 {len(smh_check.get('files', []))} 个文件")
+                return smh_check
 
             # 查找 "n" 数组（图片文件列表）在混淆代码中
-            # 格式: "n":["l.2.3","k.2.3",...] 或 "n": [...]
             n_match = re.search(r'"n"\s*:\s*\[(.*?)\]', page_content)
-            # 查找 "L" 路径
             l_match = re.search(r'"L"\s*:\s*"([^"]*)"', page_content)
 
             if n_match:
-                # 解析文件列表
                 files_str = n_match.group(1)
-                # 提取所有带引号的内容
                 files = re.findall(r'"([^"]+)"', files_str)
-
-                # 路径需要解码（可能是混淆的）
                 path = l_match.group(1) if l_match else ""
 
                 if files:
+                    print(f"[DEBUG] 从混淆代码提取到 {len(files)} 个文件, path={path[:50]}...")
                     return {
                         'files': files,
                         'path': path,
                         'total_pages': total_pages,
-                        'is_encoded': True  # 标记为编码数据
+                        'is_encoded': True
                     }
         except Exception as e:
-            print(f"解析混淆代码失败: {e}")
+            print(f"[DEBUG] 解析混淆代码失败: {e}")
 
+        print(f"[DEBUG] 无法从页面提取图片配置")
         return img_data
 
     async def _get_actual_image_urls(self, url: str) -> List[str]:
@@ -531,99 +604,171 @@ class ManhuaguiCrawler(BaseCrawler):
 
             if is_encoded:
                 # 文件名需要解码
-                report(DownloadProgress(message=f"检测到编码配置，尝试加载 {len(files)} 张图片", status="downloading"))
+                print(f"[DEBUG] 检测到编码配置，尝试解码或加载 {len(files)} 张图片")
+                report(DownloadProgress(message=f"检测到编码配置，尝试解码...", status="downloading"))
 
                 total_pages = img_config.get('total_pages', len(files))
                 if total_pages == 0:
                     total_pages = len(files)
 
-                report(DownloadProgress(message=f"正在加载所有 {total_pages} 页...", status="downloading"))
+                # 首先尝试等待 JavaScript 解码完成后再读取 SMH.imgData
+                print(f"[DEBUG] 等待 JavaScript 解码完成...")
+                await self.page.wait_for_timeout(5000)
 
-                # 使用网络拦截捕获所有图片
-                captured_urls = []
+                # 尝试再次读取 SMH.imgData（可能已经被解码）
+                decoded_config = await self.page.evaluate('''
+                    () => {
+                        if (typeof SMH !== 'undefined' && SMH.imgData && SMH.imgData.files) {
+                            // 返回完整的 imgData 信息用于调试
+                            return {
+                                files: SMH.imgData.files,
+                                path: SMH.imgData.path || '',
+                                len: SMH.imgData.len,
+                                cid: SMH.imgData.cid,
+                                bid: SMH.imgData.bid,
+                                all_keys: Object.keys(SMH.imgData)
+                            };
+                        }
+                        return null;
+                    }
+                ''')
 
-                async def capture_img(response):
-                    url = str(response.url)
-                    # 漫画柜图片通常来自 hamreus.com
-                    if 'hamreus' in url.lower():
-                        # 过滤掉非图片请求
-                        if any(ext in url.lower() for ext in ['.jpg', '.png', '.webp', '.gif']):
-                            captured_urls.append(url)
+                print(f"[DEBUG] decoded_config = {decoded_config}")
 
-                self.page.on("response", capture_img)
+                if decoded_config and decoded_config.get('files'):
+                    decoded_files = decoded_config.get('files', [])
+                    decoded_path = decoded_config.get('path', '')
+                    print(f"[DEBUG] JavaScript 解码成功! 获取到 {len(decoded_files)} 个文件, path={decoded_path}")
 
-                try:
-                    # 方法1: 快速点击下一页来触发所有图片加载
-                    # 漫画柜会在切换页面时加载图片
-                    for page_num in range(max(total_pages + 10, 25)):  # 至少点击25次
+                    # 使用解码后的数据构造 URL
+                    for filename in decoded_files:
+                        if isinstance(filename, str):
+                            if filename.startswith('http'):
+                                image_urls.append(filename)
+                            else:
+                                img_url = f"{self.IMAGE_SERVERS[0]}{decoded_path}{filename}"
+                                image_urls.append(img_url)
+
+                    total = len(image_urls)
+                    report(DownloadProgress(message=f"解码成功，获取到 {total} 张图片", status="downloading"))
+
+                else:
+                    # JavaScript 解码失败，尝试网络拦截捕获
+                    print(f"[DEBUG] JavaScript 未解码，尝试触发图片加载...")
+                    report(DownloadProgress(message=f"正在加载所有 {total_pages} 页...", status="downloading"))
+
+                    # 使用网络拦截捕获所有图片
+                    captured_urls = []
+
+                    async def capture_img(response):
+                        resp_url = str(response.url)
+                        # 漫画柜图片通常来自 hamreus.com
+                        if 'hamreus' in resp_url.lower():
+                            # 过滤掉非图片请求
+                            if any(ext in resp_url.lower() for ext in ['.jpg', '.png', '.webp', '.gif']):
+                                captured_urls.append(resp_url)
+                                print(f"[DEBUG] 捕获图片 #{len(captured_urls)}: {resp_url[:80]}...")
+
+                    self.page.on("response", capture_img)
+
+                    try:
+                        print(f"[DEBUG] 开始触发图片加载，目标页数: {total_pages}")
+
+                        # 方法1: 点击页面上的下一页按钮
+                        for attempt in range(3):
+                            try:
+                                # 先等待页面稳定
+                                await self.page.wait_for_timeout(1000)
+
+                                # 尝试找到图片容器并点击
+                                img_container = await self.page.query_selector('#manga, .manga, #img, .comic-img, img[src*="hamreus"]')
+                                if img_container:
+                                    print(f"[DEBUG] 找到图片容器，尝试点击")
+                                    await img_container.click()
+                                    await self.page.wait_for_timeout(500)
+                            except Exception as e:
+                                print(f"[DEBUG] 点击容器失败: {e}")
+
+                        # 方法2: 使用键盘右箭头
+                        print(f"[DEBUG] 使用键盘触发加载")
+                        for page_num in range(max(total_pages + 15, 30)):  # 增加点击次数
+                            try:
+                                await self.page.keyboard.press('ArrowRight')
+                                await self.page.wait_for_timeout(400)
+
+                                # 每5页检查一下进度
+                                if page_num % 5 == 0 and captured_urls:
+                                    print(f"[DEBUG] 已触发 {page_num} 次，捕获 {len(captured_urls)} 张图片")
+                            except Exception as e:
+                                print(f"[DEBUG] 键盘事件失败: {e}")
+
+                        # 方法3: 滚动触发
+                        print(f"[DEBUG] 尝试滚动触发")
+                        for _ in range(10):
+                            await self.page.evaluate("window.scrollBy(0, 500)")
+                            await self.page.wait_for_timeout(300)
+
+                        # 额外等待确保最后几张图片加载
+                        await self.page.wait_for_timeout(5000)
+                        print(f"[DEBUG] 完成触发，共捕获 {len(captured_urls)} 张图片")
+
+                    finally:
                         try:
-                            # 使用键盘快捷键（更可靠）
-                            await self.page.keyboard.press('ArrowRight')
-                            await self.page.wait_for_timeout(350)
+                            self.page.remove_listener("response", capture_img)
                         except:
                             pass
 
-                    # 额外等待确保最后几张图片加载
-                    await self.page.wait_for_timeout(3000)
-
-                finally:
-                    try:
-                        self.page.remove_listener("response", capture_img)
-                    except:
-                        pass
-
-                # 处理捕获的 URL
-                if captured_urls:
-                    # 去重并按页码排序
-                    seen = set()
-                    unique = []
-                    for u in captured_urls:
-                        # 提取文件名中的数字用于排序
-                        if u not in seen:
-                            seen.add(u)
-                            unique.append(u)
-
-                    # 按文件名排序 (01.jpg, 02.jpg, ...)
-                    def get_page_num(url):
-                        import re
-                        match = re.search(r'/(\d+)\.(?:jpg|png|webp)', url)
-                        return int(match.group(1)) if match else 0
-
-                    unique.sort(key=get_page_num)
-                    image_urls = unique
-                    total = len(image_urls)
-                    report(DownloadProgress(message=f"捕获到 {total} 张图片", status="downloading"))
-                else:
-                    report(DownloadProgress(message="未捕获到图片，尝试备用方法...", status="downloading"))
-
-                    # 备用方法：从页面元素获取已加载的图片
-                    loaded_images = await self.page.evaluate('''
-                        () => {
-                            let imgs = document.querySelectorAll('img');
-                            return Array.from(imgs)
-                                .filter(img => img.src && img.src.includes('hamreus'))
-                                .map(img => img.src);
-                        }
-                    ''')
-
-                    if loaded_images:
-                        # 去重
+                    # 处理捕获的 URL
+                    if captured_urls:
+                        # 去重并按页码排序
                         seen = set()
-                        for u in loaded_images:
+                        unique = []
+                        for u in captured_urls:
+                            # 提取文件名中的数字用于排序
                             if u not in seen:
                                 seen.add(u)
-                                image_urls.append(u)
-                        total = len(image_urls)
-                    else:
-                        # 最后尝试手动构造 URL
-                        for i, filename in enumerate(files):
-                            if isinstance(filename, str):
-                                decoded_name = _decode_filename(filename, comic_id, chapter_id)
-                                decoded_path = _decode_path(path, comic_id, chapter_id)
-                                img_url = f"{self.IMAGE_SERVERS[0]}{decoded_path}{decoded_name}"
-                                image_urls.append(img_url)
+                                unique.append(u)
 
-                        total = len(files)
+                        # 按文件名排序 (01.jpg, 02.jpg, ...)
+                        def get_page_num(url):
+                            match = re.search(r'/(\d+)\.(?:jpg|png|webp)', url)
+                            return int(match.group(1)) if match else 0
+
+                        unique.sort(key=get_page_num)
+                        image_urls = unique
+                        total = len(image_urls)
+                        report(DownloadProgress(message=f"捕获到 {total} 张图片", status="downloading"))
+                    else:
+                        report(DownloadProgress(message="未捕获到图片，尝试备用方法...", status="downloading"))
+
+                        # 备用方法：从页面元素获取已加载的图片
+                        loaded_images = await self.page.evaluate('''
+                            () => {
+                                let imgs = document.querySelectorAll('img');
+                                return Array.from(imgs)
+                                    .filter(img => img.src && img.src.includes('hamreus'))
+                                    .map(img => img.src);
+                            }
+                        ''')
+
+                        if loaded_images:
+                            # 去重
+                            seen = set()
+                            for u in loaded_images:
+                                if u not in seen:
+                                    seen.add(u)
+                                    image_urls.append(u)
+                            total = len(image_urls)
+                        else:
+                            # 最后尝试手动构造 URL
+                            for i, filename in enumerate(files):
+                                if isinstance(filename, str):
+                                    decoded_name = _decode_filename(filename, comic_id, chapter_id)
+                                    decoded_path = _decode_path(path, comic_id, chapter_id)
+                                    img_url = f"{self.IMAGE_SERVERS[0]}{decoded_path}{decoded_name}"
+                                    image_urls.append(img_url)
+
+                            total = len(files)
             else:
                 # 直接使用配置中的 URL
                 for filename in files:
@@ -672,6 +817,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
         # 方法3: 设置响应拦截器作为最后的后备方案
         if not image_urls:
+            print("[DEBUG] 方法3: 使用网络拦截捕获图片...")
             report(DownloadProgress(message="使用网络拦截捕获图片...", status="downloading"))
 
             intercepted_urls = []
@@ -681,17 +827,33 @@ class ManhuaguiCrawler(BaseCrawler):
                 if any(ext in resp_url for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
                     if 'hamreus' in resp_url or 'manhua' in resp_url:
                         intercepted_urls.append(str(response.url))
+                        print(f"[DEBUG] 拦截图片 #{len(intercepted_urls)}")
 
             self.page.on("response", handle_response)
 
-            # 滚动页面触发加载
-            for _ in range(10):
-                await self.page.evaluate("window.scrollBy(0, 500)")
-                await self.page.wait_for_timeout(500)
+            # 多种触发方式
+            print("[DEBUG] 尝试多种触发方式...")
 
-            await self.page.wait_for_timeout(2000)
+            # 滚动
+            for _ in range(15):
+                await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await self.page.wait_for_timeout(400)
+
+            # 键盘
+            for _ in range(20):
+                await self.page.keyboard.press('ArrowRight')
+                await self.page.wait_for_timeout(350)
+
+            # 点击
+            try:
+                await self.page.click('body')
+            except:
+                pass
+
+            await self.page.wait_for_timeout(3000)
 
             image_urls = intercepted_urls
+            print(f"[DEBUG] 方法3捕获到 {len(image_urls)} 张图片")
 
         # 去重但保持顺序
         seen = set()
