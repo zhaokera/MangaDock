@@ -20,31 +20,5 @@
         }
       ]
     }
-  },
-  "permissions": {
-    "allow": [
-      "WebFetch(domain:manga.bilibili.com)",
-      "Bash(python3:*)",
-      "Bash(playwright install:*)",
-      "Bash(rm:*)",
-      "Bash(pip3 install:*)",
-      "Bash(cd:*)",
-      "Bash(npm run:*)",
-      "WebFetch(domain:www.manhuagui.com)",
-      "WebSearch",
-      "WebFetch(domain:github.com)",
-      "Bash(curl:*)",
-      "Bash(python:*)",
-      "Bash(kill:*)",
-      "Bash(git init:*)",
-      "Bash(git add:*)",
-      "Bash(git remote:*)",
-      "Bash(git commit:*)",
-      "Bash(git push:*)",
-      "Bash(pkill:*)",
-      "Bash(git tag:*)",
-      "Bash(ls:*)",
-      "Bash(xxd:*)"
-    ]
   }
 }

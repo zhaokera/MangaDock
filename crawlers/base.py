@@ -228,7 +228,7 @@ class BaseCrawler(ABC):
                 response = await self.context.request.get(url, headers={
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                     'Referer': referer
-                }, timeout=30000)  # 30 seconds timeout (从 120 秒减少)
+                }, timeout=60000)  # 60 seconds timeout (针对 hamreus.com 服务器慢的问题)
 
                 if response.ok:
                     body = await response.body()

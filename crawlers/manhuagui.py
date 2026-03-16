@@ -1218,10 +1218,10 @@ class ManhuaguiCrawler(BaseCrawler):
         await asyncio.sleep(0.5)  # 短暂延迟让前端更新
 
         # 下载图片 - 使用并发下载
-        print(f"[DEBUG] 开始并发下载，共 {total} 张图片，最大并发数 5")
+        print(f"[DEBUG] 开始并发下载，共 {total} 张图片，最大并发数 3")
 
         # 创建Semaphore限制最大并发数
-        semaphore = asyncio.Semaphore(5)
+        semaphore = asyncio.Semaphore(3)
         progress_lock = asyncio.Lock()
         downloaded_count = 0
 
@@ -1244,12 +1244,12 @@ class ManhuaguiCrawler(BaseCrawler):
                 # 优先使用浏览器下载（绕过防盗链，带重试）
                 try:
                     success = await self.download_image_via_browser(
-                        img_url, filepath, page_url, max_retries=3
+                        img_url, filepath, page_url, max_retries=2
                     )
                     if not success:
                         # 浏览器下载失败，尝试普通下载
                         success = await self.download_image(
-                            img_url, filepath, {"Referer": page_url}, max_retries=3
+                            img_url, filepath, {"Referer": page_url}, max_retries=2
                         )
 
                     # 下载完成后立即报告进度
