@@ -84,6 +84,9 @@ app.add_middleware(
 tasks: dict[str, DownloadTask] = {}
 download_history: list[dict] = []
 
+# SSE 连接管理 - 存储每个任务的最后发送状态
+task_last_sse_state: dict[str, dict] = {}
+
 # 下载目录
 DOWNLOADS_DIR = Path("downloads")
 DOWNLOADS_DIR.mkdir(exist_ok=True)
@@ -282,31 +285,76 @@ async def get_status(task_id: str):
 
 @app.get("/api/progress/{task_id}")
 async def stream_progress(task_id: str):
-    """SSE 进度推送"""
+    """SSE 进度推送 - 优化版，仅在状态变化时发送"""
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    # 删除任务时清理 SSE 状态
+    def cleanup_sse_state():
+        task_last_sse_state.pop(task_id, None)
+
+    # 注册清理函数
+    from contextlib import asynccontextmanager
+    from fastapi.responses import StreamingResponse
+
+    @asynccontextmanager
+    async def cleanup_on_close():
+        try:
+            yield
+        finally:
+            cleanup_sse_state()
+
     async def event_generator():
         task = tasks[task_id]
+
+        # 发送初始化状态
+        last_state = task_last_sse_state.get(task_id, {})
+
+        # 立即发送当前状态
+        yield f"data: {get_task_data(task)}\n\n"
+
         while True:
-            data = {
-                "task_id": task.task_id,
+            # 检查任务状态是否变化
+            current_state = {
                 "status": task.status,
                 "progress": task.progress,
                 "total": task.total,
                 "message": task.message,
-                "platform": task.platform,
-                "manga_info": task.manga_info,
-                "zip_path": task.zip_path,
-                "error": task.error
+                "error": task.error,
             }
 
-            yield f"data: {json.dumps(data)}\n\n"
+            # 只有状态变化时才发送
+            state_changed = current_state != last_state
 
+            if state_changed:
+                yield f"data: {get_task_data(task)}\n\n"
+                last_state = current_state.copy()
+                task_last_sse_state[task_id] = last_state
+
+            # 任务完成或失败，结束连接
             if task.status in ("completed", "failed"):
+                cleanup_sse_state()
                 break
 
-            await asyncio.sleep(0.5)
+            # 动态等待：状态稳定时延长间隔
+            # 未变化等待较久，变化后立即重置
+            wait_time = 2.0 if not state_changed else 0.1
+            await asyncio.sleep(wait_time)
+
+    def get_task_data(task):
+        """获取任务数据的 JSON 字符串"""
+        data = {
+            "task_id": task.task_id,
+            "status": task.status,
+            "progress": task.progress,
+            "total": task.total,
+            "message": task.message,
+            "platform": task.platform,
+            "manga_info": task.manga_info,
+            "zip_path": task.zip_path,
+            "error": task.error
+        }
+        return json.dumps(data) + "\n\n"
 
     return StreamingResponse(
         event_generator(),

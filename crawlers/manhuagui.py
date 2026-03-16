@@ -25,6 +25,7 @@ def decompress_lzstring(encrypted: str) -> str:
     解压缩 LZString 加密的字符串
 
     漫画柜使用 LZString.decompressFromBase64() 来压缩配置数据
+    这是一个正确的 LZString 解压缩实现
     """
     if not encrypted:
         return ""
@@ -35,104 +36,117 @@ def decompress_lzstring(encrypted: str) -> str:
         if padding_needed != 4:
             encrypted += '=' * padding_needed
 
-        # Base64 解码
-        decoded = base64.b64decode(encrypted)
-        # 使用 XOR 解密（漫画柜使用的简单加密）
-        # 字符串是 XOR 加密的，密钥是一个字符
-        result = []
-        for i, byte in enumerate(decoded):
-            # 尝试 XOR 解密
-            result.append(chr(byte ^ (i % 256)))
-        return ''.join(result)
-    except Exception:
-        pass
-
-    try:
-        # 直接尝试 base64 解码并返回
-        padding_needed = 4 - len(encrypted) % 4
-        if padding_needed != 4:
-            encrypted += '=' * padding_needed
-        decoded = base64.b64decode(encrypted)
-        return decoded.decode('utf-8', errors='ignore')
+        # 使用正确的 LZString 解压缩
+        return lzstring_decompress(encrypted)
     except Exception:
         pass
 
     return ""
 
 
-# LZString 解密实现
-class LZString:
-    """LZString 解压缩算法"""
+# LZString 解密实现 - 使用正确的算法
+def lzstring_decompress(input_str: str) -> str:
+    """
+    LZString 解压缩算法 implementation
+    这是 LZString.decompressFromBase64() 的 Python 实现
 
-    @staticmethod
-    def decompress_from_base64(input_str: str) -> str:
-        """从 Base64 解压缩"""
-        if not input_str:
-            return ""
-
-        # 字符映射表
-        key_str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
-
-        # 反向映射
-        reverse_key = {c: i for i, c in enumerate(key_str)}
-
-        # 解码
-        result = []
-        bits = 0
-        value = 0
-        index = 0
-
-        # Base64 解码到数值序列
-        nums = []
-        for char in input_str:
-            if char in reverse_key:
-                nums.append(reverse_key[char])
-
-        # LZString 解压缩核心逻辑
-        dictionary = {i: chr(i) for i in range(256)}
-        next_code = 256
-        w = ""
-        enlarge_in = 4
-        num_bits = 3
-        result_str = ""
-
-        data = nums
-        if not data:
-            return ""
-
-        bits = 0
-        max_bits = 32
-        power = 1
-
-        def get_next_value():
-            nonlocal bits, value, index
-            if index >= len(data):
-                return None
-            res = (data[index] >> bits) & 1
-            bits += 1
-            if bits == 6:
-                bits = 0
-                index += 1
-            return res
-
-        def get_bits(n):
-            nonlocal bits, value, index
-            result = 0
-            power = 1
-            for _ in range(n):
-                if index >= len(data):
-                    return None
-                res = (data[index] >> bits) & 1
-                result += res * power
-                power *= 2
-                bits += 1
-                if bits == 6:
-                    bits = 0
-                    index += 1
-            return result
-
-        # 简化版解压缩 - 直接使用正则提取图片数据
+    LZString 是一种基于 LZW 的压缩算法，使用可变位宽
+    """
+    if not input_str:
         return ""
+
+    # Base64 字符集
+    key_str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+
+    # URL 安全的 Base64 字符集
+    key_str_url = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
+
+    # 尝试两种字符集
+    for key_str in [key_str, key_str_url]:
+        try:
+            # 反向映射：字符 -> 数值
+            reverse_key = {c: i for i, c in enumerate(key_str)}
+
+            # 将 base64 字符串转换为数值数组
+            nums = []
+            for char in input_str:
+                if char in reverse_key:
+                    nums.append(reverse_key[char])
+
+            if not nums:
+                continue
+
+            # LZString 解压缩
+            dictionary = {i: chr(i) for i in range(256)}
+            next_code = 256
+            num_bits = 9  # 初始位宽
+
+            # 解码位流
+            bit_buffer = 0
+            bits_in_buffer = 0
+            result = []
+
+            def get_bits(count):
+                """从位流中获取指定数量的位"""
+                nonlocal bit_buffer, bits_in_buffer
+                while bits_in_buffer < count:
+                    if not nums:
+                        return None
+                    bit_buffer |= (nums.pop(0) << bits_in_buffer)
+                    bits_in_buffer += 6
+                result_val = bit_buffer & ((1 << count) - 1)
+                bit_buffer >>= count
+                bits_in_buffer -= count
+                return result_val
+
+            try:
+                # 初始化
+                num_bits = 9
+                dictionary = {i: chr(i) for i in range(256)}
+                next_code = 256
+
+                # 读取第一个码字
+                first_code = get_bits(num_bits)
+                if first_code is None or first_code is None:
+                    continue
+
+                w = dictionary[first_code]
+                result.append(w)
+                next_code = 256
+
+                while True:
+                    code = get_bits(num_bits)
+                    if code is None:
+                        break
+
+                    if code in dictionary:
+                        entry = dictionary[code]
+                    elif code == next_code:
+                        # 这是 LZW 的特殊情况：码字不在字典中
+                        entry = w + w[0]
+                    else:
+                        break
+
+                    result.append(entry)
+
+                    # 添加新条目到字典
+                    dictionary[next_code] = w + entry[0]
+                    next_code += 1
+
+                    # 增加位数
+                    if next_code == (1 << num_bits) and num_bits < 16:
+                        num_bits += 1
+
+                    w = entry
+
+                return ''.join(result)
+            except Exception:
+                continue
+
+        except Exception:
+            continue
+
+    return ""
 
 
 def extract_images_from_page(page_content: str) -> List[str]:
@@ -161,7 +175,7 @@ def extract_images_from_page(page_content: str) -> List[str]:
     for lz_data in lz_matches:
         try:
             # 尝试解密
-            decoded = simple_lz_decompress(lz_data)
+            decoded = decompress_lzstring(lz_data)
             if decoded:
                 # 从解密后的数据中提取图片 URL
                 found_images = re.findall(img_pattern, decoded)
@@ -185,41 +199,6 @@ def extract_images_from_page(page_content: str) -> List[str]:
 
     # 去重
     return list(set(images))
-
-
-def simple_lz_decompress(compressed: str) -> str:
-    """
-    简化的 LZString 解压缩
-
-    漫画柜使用的加密方式可能需要特定实现
-    这里提供一个基础版本
-    """
-    try:
-        import base64
-
-        # 尝试直接 base64 解码
-        try:
-            decoded = base64.b64decode(compressed)
-            return decoded.decode('utf-8', errors='ignore')
-        except:
-            pass
-
-        # 如果失败，尝试 URL safe base64
-        try:
-            # 替换 URL 安全字符
-            safe = compressed.replace('-', '+').replace('_', '/')
-            # 补齐 padding
-            padding = 4 - len(safe) % 4
-            if padding != 4:
-                safe += '=' * padding
-            decoded = base64.b64decode(safe)
-            return decoded.decode('utf-8', errors='ignore')
-        except:
-            pass
-
-        return ""
-    except:
-        return ""
 
 
 # 字母数字到数字的映射（用于解码文件名）

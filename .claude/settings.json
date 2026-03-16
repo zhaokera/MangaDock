@@ -1,24 +1,12 @@
 {
   "hooks": {
     "onFileWrite": {
-      "description": "Run after Claude edits or writes files",
-      "commands": [
-        {
-          "name": "build",
-          "command": "cd /Users/zhaok/Desktop/漫画/web && npm run build",
-          "description": "Build the frontend project"
-        }
-      ]
+      "command": "cd /Users/zhaok/Desktop/漫画/web && npm run build",
+      "description": "Build the frontend project after file changes"
     },
     "onTaskComplete": {
-      "description": "Run when a task is completed or waiting for input",
-      "commands": [
-        {
-          "name": "status-summary",
-          "command": "echo \"Project status: Ready\"",
-          "description": "Output brief status summary"
-        }
-      ]
+      "command": "echo \"Project status: Ready\"",
+      "description": "Output brief status summary when task completes"
     }
   }
 }
