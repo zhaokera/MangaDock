@@ -333,10 +333,10 @@ class ManhuaguiCrawler(BaseCrawler):
             dict: 包含 files (图片文件列表) 和 path (路径前缀) 的字典
         """
         # 等待 JavaScript 执行完成 (增加等待时间让 packer 解码)
-        await self.page.wait_for_timeout(3000)
+        await self.page.wait_for_timeout(5000)
 
         # 多次尝试读取 SMH.imgData，因为 packer 解码需要时间
-        for attempt in range(5):
+        for attempt in range(7):
             img_data = await self.page.evaluate('''
                 () => {
                     // 方法1: 尝试 SMH.imgData (主要方式)
@@ -408,7 +408,7 @@ class ManhuaguiCrawler(BaseCrawler):
             # 只有当 img_data 包含有效的 files 数组时才返回
             if img_data and isinstance(img_data, dict) and img_data.get('files'):
                 files = img_data.get('files', [])
-                print(f"[DEBUG] 尝试 {attempt + 1}/5: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
+                print(f"[DEBUG] 尝试 {attempt + 1}/7: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
 
                 # 只有当文件数量足够多时才返回（至少20个或等于总页数）
                 # 如果文件太少，继续尝试其他方法
@@ -416,9 +416,12 @@ class ManhuaguiCrawler(BaseCrawler):
                     print(f"[DEBUG] 文件数量足够 ({len(files)} >= 20)，返回配置")
                     return img_data
                 else:
-                    print(f"[DEBUG] 文件数量太少 ({len(files)} < 20)，继续尝试其他方法...")
-                    # 不return，继续下一次循环尝试其他方法
-                    await self.page.wait_for_timeout(1000)
+                    print(f"[DEBUG] 文件数量太少 ({len(files)} < 20)，继续尝试...")
+                    # 指数退避等待
+                    if attempt < 6:
+                        delay = 1 * (2 ** attempt)  # 1s, 2s, 4s, 8s, 16s, 32s
+                        print(f"[DEBUG] 等待 {delay}s 后重试...")
+                        await self.page.wait_for_timeout(delay * 1000)
                     continue
 
             # 没找到或太少，等待更长时间再试
@@ -643,17 +646,33 @@ class ManhuaguiCrawler(BaseCrawler):
         current_time = time.strftime('%H:%M:%S', time.localtime())
         print(f"[DEBUG] 下载任务开始: {current_time}")
 
-        # 访问页面 (使用 load 而非 networkidle，避免广告等导致的超时)
+        # 访问页面 (带重试机制)
         report(DownloadProgress(message="正在加载页面...", status="downloading"))
-        try:
-            await self.page.goto(url, wait_until="load", timeout=60000)
-        except Exception as e:
-            # 如果 load 也超时，尝试 domcontentloaded
+
+        # 指数退避重试页面加载
+        page_load_success = False
+        for attempt in range(1, 4):
             try:
-                await self.page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            except Exception as e2:
-                report(DownloadProgress(message=f"页面加载警告: {str(e2)[:50]}", status="downloading"))
-        await self.page.wait_for_timeout(2000)
+                await self.page.goto(url, wait_until="load", timeout=90000)
+                page_load_success = True
+                break
+            except Exception as e:
+                print(f"页面加载失败 (尝试 {attempt}/3): {type(e).__name__}")
+                if attempt < 4:
+                    delay = 2 * (2 ** (attempt - 1))  # 2s, 4s, 8s
+                    print(f"等待 {delay}s 后重试...")
+                    await self.page.wait_for_timeout(delay * 1000)
+
+        # 如果 load 失败，尝试 domcontentloaded
+        if not page_load_success:
+            try:
+                await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page_load_success = True
+            except Exception as e:
+                report(DownloadProgress(message=f"页面加载警告: {str(e)[:50]}", status="downloading"))
+
+        # 等待页面 JavaScript 执行完成
+        await self.page.wait_for_timeout(3000)
 
         # 尝试从页面获取标题
         try:

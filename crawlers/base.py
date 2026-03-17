@@ -149,9 +149,9 @@ class BaseCrawler(ABC):
         self.page = None
         self.playwright = None
 
-    async def download_image(self, url: str, filepath: Path, headers: Optional[dict] = None, max_retries: int = 3) -> bool:
+    async def download_image(self, url: str, filepath: Path, headers: Optional[dict] = None, max_retries: int = 5) -> bool:
         """
-        下载单张图片（带重试机制）
+        下载单张图片（带重试机制，指数退避）
 
         Args:
             url: 图片 URL
@@ -188,22 +188,31 @@ class BaseCrawler(ABC):
                 if headers:
                     default_headers.update(headers)
 
-                async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+                # 指数退避延迟：0.5s, 1s, 2s, 4s, 8s
+                if attempt > 1:
+                    delay = 0.5 * (2 ** (attempt - 2))
+                    print(f"图片下载等待 {delay:.1f}s 后重试 (尝试 {attempt}/{max_retries})...")
+                    await asyncio.sleep(delay)
+
+                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
                     response = await client.get(url, headers=default_headers)
                     if response.status_code == 200 and len(response.content) > 0:
                         filepath.write_bytes(response.content)
                         return True
+                    else:
+                        last_error = Exception(f"HTTP {response.status_code}")
+                        print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 last_error = e
-                print(f"下载图片失败 (尝试 {attempt}/{max_retries}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(0.5)  # 等待0.5秒后重试
+                print(f"图片下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}")
         print(f"图片下载最终失败: {last_error}")
         return False
 
-    async def download_image_via_browser(self, url: str, filepath: Path, referer: str = "", max_retries: int = 3) -> bool:
+    async def download_image_via_browser(self, url: str, filepath: Path, referer: str = "", max_retries: int = 5) -> bool:
         """
-        使用浏览器上下文下载图片（保持会话状态，带重试机制）
+        使用浏览器上下文下载图片（保持会话状态，带重试机制，指数退避）
 
         Args:
             url: 图片 URL
@@ -214,21 +223,18 @@ class BaseCrawler(ABC):
         Returns:
             bool: 是否成功
         """
-        if not self.page:
+        if not self.page or not self.context:
             return False
 
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
-                # 方法1: 使用 page.request (Playwright 的请求上下文)
-                # 这会共享浏览器的 cookies 和存储
-                from playwright.async_api import Request
-
                 # 使用 context.request 发送请求
                 response = await self.context.request.get(url, headers={
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                    'Referer': referer
-                }, timeout=60000)  # 60 seconds timeout (针对 hamreus.com 服务器慢的问题)
+                    'Referer': referer,
+                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                }, timeout=120000)  # 120 seconds timeout
 
                 if response.ok:
                     body = await response.body()
@@ -236,13 +242,20 @@ class BaseCrawler(ABC):
                         filepath.write_bytes(body)
                         return True
                 else:
+                    last_error = Exception(f"HTTP {response.status}")
                     print(f"浏览器请求下载失败 (尝试 {attempt}/{max_retries}): status={response.status}")
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 last_error = e
-                print(f"浏览器下载异常 (尝试 {attempt}/{max_retries}): {e}")
+                print(f"浏览器下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}")
+
+                # 指数退避延迟
                 if attempt < max_retries:
-                    await asyncio.sleep(0.5)  # 等待0.5秒后重试
+                    delay = 0.5 * (2 ** (attempt - 1))
+                    print(f"浏览器下载等待 {delay:.1f}s 后重试...")
+                    await asyncio.sleep(delay)
 
         print(f"浏览器下载最终失败: {last_error}")
         return False
