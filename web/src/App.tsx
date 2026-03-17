@@ -65,10 +65,6 @@ const App: React.FC = () => {
           if (status.status === 'completed' || status.status === 'failed') {
             setDownloading(false);
           }
-        },
-        (error) => {
-          console.error('SSE 错误', error);
-          setDownloading(false);
         }
       );
 

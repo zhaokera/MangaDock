@@ -95,8 +95,7 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
 // SSE 进度推送 - 带自动重连
 export function subscribeProgress(
   taskId: string,
-  onProgress: (status: TaskStatus) => void,
-  onError: (error: Error) => void
+  onProgress: (status: TaskStatus) => void
 ): () => void {
   let eventSource: EventSource | null = null;
   let isClosed = false;
@@ -122,7 +121,7 @@ export function subscribeProgress(
       }
     };
 
-    eventSource.onerror = (error) => {
+    eventSource.onerror = () => {
       console.log('SSE 连接中断，准备重连...');
       eventSource?.close();
 
