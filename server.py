@@ -11,7 +11,7 @@ import os
 import re
 import zipfile
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
 from dataclasses import dataclass, field, asdict
@@ -93,6 +93,9 @@ download_history: list[dict] = []
 # SSE 连接管理 - 存储每个任务的最后发送状态
 task_last_sse_state: dict[str, dict] = {}
 
+# 全局状态锁 - 保护并发访问
+_state_lock = asyncio.Lock()
+
 # 下载目录（从配置获取）
 DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
@@ -112,12 +115,46 @@ def load_history() -> list[dict]:
 
 
 def save_history(history: list[dict]) -> None:
-    """保存历史记录到文件"""
+    """保存历史记录到文件（调用者需确保线程安全）"""
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception as e:
         print(f"保存历史记录失败: {e}")
+
+
+async def add_history_item(history_item: dict) -> bool:
+    """
+    添加历史记录项（线程安全）
+
+    Returns:
+        bool: 是否成功添加（False 表示已存在）
+    """
+    async with _state_lock:
+        if any(h.get("task_id") == history_item["task_id"] for h in download_history):
+            return False
+        download_history.append(history_item)
+        save_history(download_history)
+
+        # 限制历史记录数量
+        history_config = config.get_config().history
+        if history_config.max_items and len(download_history) > history_config.max_items:
+            download_history[:] = download_history[-history_config.max_items:]
+            save_history(download_history)
+        return True
+
+
+def cleanup_old_history():
+    """清理过期的历史记录"""
+    try:
+        history_config = CONFIG.history
+        if history_config.auto_cleanup_days > 0:
+            cutoff_date = datetime.now() - timedelta(days=history_config.auto_cleanup_days)
+            global download_history
+            download_history = [h for h in download_history if datetime.fromisoformat(h.get('created_at', datetime.now().isoformat())) > cutoff_date]
+            save_history(download_history)
+    except Exception as e:
+        print(f"清理历史记录失败: {e}")
 
 
 # 加载历史记录
@@ -132,6 +169,11 @@ class MangaDownloader:
     def __init__(self, task: DownloadTask):
         self.task = task
         self.crawler: Optional[BaseCrawler] = None
+
+    def _cleanup_task(self):
+        """清理任务相关的资源"""
+        tasks.pop(self.task.task_id, None)
+        task_last_sse_state.pop(self.task.task_id, None)
 
     async def run(self):
         """执行下载"""
@@ -151,6 +193,20 @@ class MangaDownloader:
             self.task.message = f"下载失败: {e}"
             import traceback
             traceback.print_exc()
+        finally:
+            # 任务完成或失败后清理 tasks 字典和 SSE 状态
+            self._cleanup_task()
+
+    def _update_manga_info(self):
+        """更新漫画信息（合并重复逻辑）"""
+        if self.crawler and hasattr(self.crawler, 'manga_info'):
+            info = self.crawler.manga_info
+            if info:
+                self.task.manga_info = info.to_dict()
+        elif self.crawler and hasattr(self.crawler, '_manga_info'):
+            info = self.crawler._manga_info
+            if info:
+                self.task.manga_info = info.to_dict()
 
     async def _do_download(self):
         """执行下载"""
@@ -176,12 +232,6 @@ class MangaDownloader:
             if progress.status:
                 self.task.status = progress.status
 
-            # 更新漫画信息
-            if self.crawler and hasattr(self.crawler, '_manga_info'):
-                info = self.crawler._manga_info
-                if info:
-                    self.task.manga_info = info.to_dict()
-
         # 执行下载
         output_path = await self.crawler.download(
             url,
@@ -191,11 +241,8 @@ class MangaDownloader:
 
         self.task.output_path = output_path
 
-        # 更新漫画信息
-        if self.crawler and hasattr(self.crawler, 'manga_info'):
-            info = self.crawler.manga_info
-            if info:
-                self.task.manga_info = info.to_dict()
+        # 更新漫画信息（合并逻辑）
+        self._update_manga_info()
 
         # 打包 zip
         self.task.message = "正在打包..."
@@ -214,7 +261,7 @@ class MangaDownloader:
         self.task.status = "completed"
         self.task.message = f"下载完成! 共 {self.task.total} 张图片"
 
-        # 添加到历史
+        # 添加到历史（使用线程安全的方法）
         if self.task.manga_info:
             history_item = {
                 "task_id": self.task.task_id,
@@ -225,10 +272,7 @@ class MangaDownloader:
                 "page_count": self.task.total,
                 "created_at": self.task.created_at.isoformat()
             }
-            # 避免重复添加
-            if not any(h.get("task_id") == history_item["task_id"] for h in download_history):
-                download_history.append(history_item)
-                save_history(download_history)
+            await add_history_item(history_item)
 
 
 # ============== API 端点 ==============
@@ -325,21 +369,6 @@ async def stream_progress(task_id: str):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    # 删除任务时清理 SSE 状态
-    def cleanup_sse_state():
-        task_last_sse_state.pop(task_id, None)
-
-    # 注册清理函数
-    from contextlib import asynccontextmanager
-    from fastapi.responses import StreamingResponse
-
-    @asynccontextmanager
-    async def cleanup_on_close():
-        try:
-            yield
-        finally:
-            cleanup_sse_state()
-
     async def event_generator():
         task = tasks[task_id]
 
@@ -389,11 +418,16 @@ async def stream_progress(task_id: str):
 
             # 任务完成或失败，结束连接
             if task.status in ("completed", "failed"):
-                cleanup_sse_state()
+                task_last_sse_state.pop(task_id, None)
                 break
 
-            # 动态等待：状态稳定时延长间隔
-            wait_time = 2.0
+            # 动态等待：根据 SSE 配置调整等待时间
+            try:
+                sse_config = config.get_config().sse
+                wait_time = max(0.5, sse_config.heartbeat_interval)
+            except Exception:
+                # 配置读取失败，使用默认值
+                wait_time = 2.0
             await asyncio.sleep(wait_time)
 
     def get_task_data(task):
@@ -446,7 +480,9 @@ async def download_file(task_id: str):
 @app.get("/api/history")
 async def get_history():
     """获取下载历史"""
-    return {"history": download_history[-20:]}
+    history_config = config.get_config().history
+    max_items = history_config.max_items if history_config.max_items > 0 else 100
+    return {"history": download_history[-max_items:]}
 
 
 # ============== 启动 ==============

@@ -18,6 +18,7 @@ from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
+import config
 
 
 def decompress_lzstring(encrypted: str) -> str:
@@ -180,7 +181,8 @@ def extract_images_from_page(page_content: str) -> List[str]:
                 # 从解密后的数据中提取图片 URL
                 found_images = re.findall(img_pattern, decoded)
                 images.extend(found_images)
-        except:
+        except Exception as e:
+            # 解密失败属于可恢复错误，继续尝试其他模式
             pass
 
     # 模式3: 查找 JSON 配置
@@ -194,7 +196,8 @@ def extract_images_from_page(page_content: str) -> List[str]:
             for f in files:
                 if isinstance(f, str) and any(ext in f.lower() for ext in ['.jpg', '.png', '.webp']):
                     images.append(f)
-        except:
+        except Exception as e:
+            # JSON 解析失败属于可恢复错误，继续尝试其他模式
             pass
 
     # 去重
@@ -671,8 +674,8 @@ class ManhuaguiCrawler(BaseCrawler):
             except Exception as e:
                 report(DownloadProgress(message=f"页面加载警告: {str(e)[:50]}", status="downloading"))
 
-        # 等待页面 JavaScript 执行完成
-        await self.page.wait_for_timeout(3000)
+        # 使用动态等待检查页面元素是否存在
+        await self._wait_for_page_ready()
 
         # 尝试从页面获取标题
         try:
@@ -680,7 +683,8 @@ class ManhuaguiCrawler(BaseCrawler):
             if title_elem:
                 comic_title = await title_elem.inner_text()
                 comic_title = comic_title.strip().split('\n')[0]
-        except:
+        except Exception:
+            # 获取标题失败属于可恢复错误
             pass
 
         try:
@@ -688,7 +692,8 @@ class ManhuaguiCrawler(BaseCrawler):
             if chapter_elem:
                 chapter_title = await chapter_elem.inner_text()
                 chapter_title = chapter_title.strip()
-        except:
+        except Exception:
+            # 获取章节标题失败属于可恢复错误
             pass
 
         # 方法1: 优先从 JavaScript 变量直接提取配置 (最可靠)
@@ -879,7 +884,8 @@ class ManhuaguiCrawler(BaseCrawler):
                     finally:
                         try:
                             self.page.remove_listener("response", capture_img)
-                        except:
+                        except Exception:
+                            # 移除监听器失败属于可恢复错误
                             pass
 
                     # 处理捕获的 URL
@@ -982,7 +988,8 @@ class ManhuaguiCrawler(BaseCrawler):
                 try:
                     await self.page.keyboard.press('ArrowRight')
                     await self.page.wait_for_timeout(400)
-                except:
+                except Exception:
+                    # 键盘操作失败属于可恢复错误
                     pass
 
             await self.page.wait_for_timeout(3000)
@@ -995,7 +1002,8 @@ class ManhuaguiCrawler(BaseCrawler):
             # 移除监听器
             try:
                 self.page.remove_listener("response", handle_response)
-            except:
+            except Exception:
+                # 移除监听器失败属于可恢复错误
                 pass
 
         # 调试输出当前图片数量
@@ -1015,7 +1023,8 @@ class ManhuaguiCrawler(BaseCrawler):
                 page_content = await self.page.content()
                 page_match = re.search(r'/(\d+)\)\s*</span>', page_content)
                 total_pages = int(page_match.group(1)) if page_match else 27
-            except:
+            except Exception:
+                # 获取总页数失败，使用默认值
                 pass
 
             # 使用 SMH.utils.goPage() 翻页，捕获所有图片 URL
@@ -1130,7 +1139,8 @@ class ManhuaguiCrawler(BaseCrawler):
                                     if isinstance(f, str):
                                         img_url = f"{self.IMAGE_SERVERS[0]}{f}"
                                         image_urls.append(img_url)
-                        except:
+                        except Exception:
+                            # 解析失败属于可恢复错误，继续尝试其他方法
                             pass
 
             except Exception as e:
@@ -1152,29 +1162,38 @@ class ManhuaguiCrawler(BaseCrawler):
 
             self.page.on("response", handle_response)
 
-            # 多种触发方式
-            print("[DEBUG] 尝试多种触发方式...")
-
-            # 滚动
-            for _ in range(15):
-                await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-                await self.page.wait_for_timeout(400)
-
-            # 键盘
-            for _ in range(20):
-                await self.page.keyboard.press('ArrowRight')
-                await self.page.wait_for_timeout(350)
-
-            # 点击
             try:
-                await self.page.click('body')
-            except:
-                pass
+                # 多种触发方式
+                print("[DEBUG] 尝试多种触发方式...")
 
-            await self.page.wait_for_timeout(3000)
+                # 滚动
+                for _ in range(15):
+                    await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                    await self.page.wait_for_timeout(400)
 
-            image_urls = intercepted_urls
-            print(f"[DEBUG] 方法3捕获到 {len(image_urls)} 张图片")
+                # 键盘
+                for _ in range(20):
+                    await self.page.keyboard.press('ArrowRight')
+                    await self.page.wait_for_timeout(350)
+
+                # 点击
+                try:
+                    await self.page.click('body')
+                except Exception:
+                    # 点击失败属于可恢复错误
+                    pass
+
+                await self.page.wait_for_timeout(3000)
+
+                image_urls = intercepted_urls
+                print(f"[DEBUG] 方法3捕获到 {len(image_urls)} 张图片")
+            finally:
+                # 移除监听器
+                try:
+                    self.page.remove_listener("response", handle_response)
+                except Exception:
+                    # 移除监听器失败属于可恢复错误
+                    pass
 
         # 去重但保持顺序
         seen = set()
@@ -1216,16 +1235,22 @@ class ManhuaguiCrawler(BaseCrawler):
         await asyncio.sleep(0.5)  # 短暂延迟让前端更新
 
         # 下载图片 - 使用并发下载
-        print(f"[DEBUG] 开始并发下载，共 {total} 张图片，最大并发数 3")
+        print(f"[DEBUG] 开始并发下载，共 {total} 张图片")
+
+        # 从配置获取并发数
+        cfg = config.get_config()
+        concurrency = cfg.download.concurrency
+        max_retries = cfg.network.retry_max_attempts
+
+        # 使用可变对象存储计数器，避免 nonlocal 问题
+        progress_counter = {'value': 0}
+        progress_lock = asyncio.Lock()
 
         # 创建Semaphore限制最大并发数
-        semaphore = asyncio.Semaphore(3)
-        progress_lock = asyncio.Lock()
-        downloaded_count = 0
+        semaphore = asyncio.Semaphore(concurrency)
 
         async def download_with_semaphore(img_url, filepath, page_url, i, total):
-            """带并发限制的下载函数"""
-            nonlocal downloaded_count
+            """带并发限制的下载函数 - 使用并发下载策略"""
             async with semaphore:
                 ext = ".jpg"
                 if ".webp" in img_url.lower():
@@ -1239,42 +1264,35 @@ class ManhuaguiCrawler(BaseCrawler):
                     "Referer": page_url,
                 }
 
-                # 优先使用浏览器下载（绕过防盗链，带重试）
-                try:
-                    success = await self.download_image_via_browser(
-                        img_url, filepath, page_url, max_retries=2
+                # 并发下载辅助函数
+                async def browser_download():
+                    """浏览器下载任务"""
+                    return await self.download_image_via_browser(
+                        img_url, filepath, page_url, max_retries=max_retries
                     )
-                    if not success:
-                        # 浏览器下载失败，尝试普通下载
-                        success = await self.download_image(
-                            img_url, filepath, {"Referer": page_url}, max_retries=2
-                        )
 
-                    # 下载完成后立即报告进度
-                    async with progress_lock:
-                        downloaded_count += 1
-                        report(DownloadProgress(
-                            current=downloaded_count,
-                            total=total,
-                            message=f"下载中 {downloaded_count}/{total}",
-                            status="downloading"
-                        ))
+                async def http_download():
+                    """普通HTTP下载任务"""
+                    return await self.download_image(
+                        img_url, filepath, {"Referer": page_url}, max_retries=max_retries
+                    )
 
-                    return success
-                except Exception as e:
-                    print(f"下载异常 [{i}/{total}]: {e}")
+                # 并发执行两个下载任务，使用快速者优先策略
+                success = await self._download_with_fastest_strategy(
+                    [browser_download(), http_download()]
+                )
 
-                    # 异常也报告进度
-                    async with progress_lock:
-                        downloaded_count += 1
-                        report(DownloadProgress(
-                            current=downloaded_count,
-                            total=total,
-                            message=f"下载中 {downloaded_count}/{total}",
-                            status="downloading"
-                        ))
+                # 下载完成后立即报告进度
+                async with progress_lock:
+                    progress_counter['value'] += 1
+                    report(DownloadProgress(
+                        current=progress_counter['value'],
+                        total=total,
+                        message=f"下载中 {progress_counter['value']}/{total}",
+                        status="downloading"
+                    ))
 
-                    return False
+                return success
 
         # 创建所有下载任务
         tasks = []
@@ -1316,3 +1334,94 @@ class ManhuaguiCrawler(BaseCrawler):
         print(f"[DEBUG] 平均速度: {total_duration/total:.2f}秒/张" if total > 0 else "[DEBUG] 无图片下载")
 
         return str(save_dir)
+
+    async def _wait_for_page_ready(self, max_wait: float = 5.0, check_interval: float = 0.2) -> bool:
+        """
+        动态等待页面准备就绪
+        检查页面上的关键元素是否存在，而不是固定等待
+
+        Args:
+            max_wait: 最大等待时间（秒）
+            check_interval: 检查间隔（秒）
+
+        Returns:
+            bool: 是否成功
+        """
+        try:
+            import time
+            start_time = time.time()
+            while time.time() - start_time < max_wait:
+                # 检查关键元素是否存在
+                elements_exist = await self.page.evaluate('''
+                    () => {
+                        // 检查 SMH 对象或页面关键元素是否存在
+                        return typeof SMH !== 'undefined' ||
+                               document.querySelector('h1') !== null ||
+                               document.querySelector('.book-title') !== null;
+                    }
+                ''')
+                if elements_exist:
+                    return True
+                await asyncio.sleep(check_interval)
+            # 超时也继续，避免阻塞
+            return True
+        except Exception as e:
+            print(f"[DEBUG] 动态等待页面就绪异常: {e}")
+            # 出错时也继续，避免阻塞
+            return True
+
+    async def _download_with_fastest_strategy(self,coroutines: list) -> bool:
+        """
+        并发下载策略 - 快速者优先
+        同时启动多个下载任务，返回第一个完成的结果，取消其他任务
+
+        Args:
+            coroutines: 下载 coroutine 列表
+
+        Returns:
+            bool: 是否下载成功
+        """
+        tasks = [asyncio.create_task(coro) for coro in coroutines]
+
+        try:
+            # 等待第一个任务完成
+            done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED
+            )
+
+            # 获取第一个完成的结果
+            for task in done:
+                try:
+                    result = task.result()
+                    if result:
+                        # 成功，取消其他任务
+                        for t in pending:
+                            t.cancel()
+                        return True
+                except Exception:
+                    continue
+
+            # 第一个完成的任务没有成功，等待所有任务完成
+            for task in pending:
+                task.cancel()
+
+            # 等待所有任务真正取消
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+            # 检查是否有任何任务成功
+            for task in done:
+                try:
+                    if task.result():
+                        return True
+                except Exception:
+                    continue
+
+            return False
+
+        except asyncio.CancelledError:
+            # 取消所有任务
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise

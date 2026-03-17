@@ -41,6 +41,13 @@ class LoggingConfig:
 class CrawlerConfig:
     user_agent: str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     manhuagui_use_playscript: bool = True
+    # 浏览器启动参数
+    browser_args: list = field(default_factory=lambda: [
+        "--no-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-gpu",
+        "--set-bundle-mapping=chromium,chrome",
+    ])
 
 
 @dataclass
@@ -148,6 +155,8 @@ class ConfigManager:
                 crawl_data = data['crawler']
                 if 'user_agent' in crawl_data:
                     self.config.crawler.user_agent = crawl_data['user_agent']
+                if 'browser_args' in crawl_data:
+                    self.config.crawler.browser_args = crawl_data['browser_args']
                 if 'websites' in crawl_data and 'manhuagui' in crawl_data['websites']:
                     mg = crawl_data['websites']['manhuagui']
                     if 'use_playscript' in mg:

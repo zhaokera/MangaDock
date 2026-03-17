@@ -5,9 +5,12 @@
 
 import asyncio
 from abc import ABC, abstractmethod
-from typing import Optional, List, Callable, Any
+from typing import Optional, List, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
+
+if TYPE_CHECKING:
+    import httpx
 
 
 @dataclass
@@ -69,6 +72,32 @@ class BaseCrawler(ABC):
         self.context = None
         self.page = None
         self.playwright = None
+        self.http_client: Optional["httpx.AsyncClient"] = None
+
+    async def get_http_client(self) -> "httpx.AsyncClient":
+        """
+        获取共享的 httpx 客户端（连接池优化）
+        避免为每个图片请求创建新的客户端
+        """
+        import httpx
+        if self.http_client is None or not self.http_client._transport:
+            self.http_client = httpx.AsyncClient(
+                timeout=60,
+                follow_redirects=True,
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                    "Accept-Encoding": "gzip, deflate, br",
+                }
+            )
+        return self.http_client
+
+    async def close_http_client(self):
+        """关闭共享的 httpx 客户端"""
+        if self.http_client:
+            await self.http_client.aclose()
+            self.http_client = None
 
     @classmethod
     def can_handle(cls, url: str) -> bool:
@@ -122,24 +151,43 @@ class BaseCrawler(ABC):
 
     async def start_browser(self, headless: bool = True):
         """启动浏览器"""
+        import httpx
+        import config
         try:
             from playwright.async_api import async_playwright
         except ImportError:
             raise ImportError("请先安装 playwright: pip install playwright && playwright install chromium")
 
+        # 从配置获取浏览器启动参数
+        cfg = config.get_config()
+        browser_args = cfg.crawler.browser_args
+
         self.playwright = await async_playwright().start()
         self.browser = await self.playwright.chromium.launch(
             headless=headless,
-            channel="chrome"
+            channel="chrome",
+            args=browser_args
         )
         self.context = await self.browser.new_context(
             viewport={"width": 1920, "height": 1080},
             user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         )
         self.page = await self.context.new_page()
+        # 初始化 http 客户端（连接池复用）
+        self.http_client = httpx.AsyncClient(
+            timeout=60,
+            follow_redirects=True,
+            headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+            }
+        )
 
     async def close_browser(self):
         """关闭浏览器"""
+        await self.close_http_client()
         if self.browser:
             await self.browser.close()
         if self.playwright:
@@ -194,14 +242,15 @@ class BaseCrawler(ABC):
                     print(f"图片下载等待 {delay:.1f}s 后重试 (尝试 {attempt}/{max_retries})...")
                     await asyncio.sleep(delay)
 
-                async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-                    response = await client.get(url, headers=default_headers)
-                    if response.status_code == 200 and len(response.content) > 0:
-                        filepath.write_bytes(response.content)
-                        return True
-                    else:
-                        last_error = Exception(f"HTTP {response.status_code}")
-                        print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
+                # 使用共享的 httpx 客户端（连接池优化）
+                client = await self.get_http_client()
+                response = await client.get(url, headers=default_headers)
+                if response.status_code == 200 and len(response.content) > 0:
+                    filepath.write_bytes(response.content)
+                    return True
+                else:
+                    last_error = Exception(f"HTTP {response.status_code}")
+                    print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
