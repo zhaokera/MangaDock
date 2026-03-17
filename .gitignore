@@ -1,6 +1,10 @@
 # Downloads
 downloads/
 
+# Worktrees
+.worktrees/
+worktrees/
+
 # Python
 __pycache__/
 *.py[cod]
