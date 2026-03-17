@@ -92,33 +92,59 @@ export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   return response.json();
 }
 
-// SSE 进度推送
+// SSE 进度推送 - 带自动重连
 export function subscribeProgress(
   taskId: string,
   onProgress: (status: TaskStatus) => void,
   onError: (error: Error) => void
 ): () => void {
-  const eventSource = new EventSource(`${API_BASE}/progress/${taskId}`);
+  let eventSource: EventSource | null = null;
+  let isClosed = false;
+  let reconnectDelay = 1000; // 初始重连延迟 1 秒
+  const maxReconnectDelay = 10000; // 最大重连延迟 10 秒
 
-  eventSource.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onProgress(data);
+  const connect = () => {
+    if (isClosed) return;
 
-      if (data.status === 'completed' || data.status === 'failed') {
-        eventSource.close();
+    eventSource = new EventSource(`${API_BASE}/progress/${taskId}`);
+
+    eventSource.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        onProgress(data);
+        reconnectDelay = 1000; // 成功接收后重置延迟
+
+        if (data.status === 'completed' || data.status === 'failed') {
+          close();
+        }
+      } catch (e) {
+        console.error('解析 SSE 数据失败', e);
       }
-    } catch (e) {
-      console.error('解析 SSE 数据失败', e);
-    }
+    };
+
+    eventSource.onerror = (error) => {
+      console.log('SSE 连接中断，准备重连...');
+      eventSource?.close();
+
+      if (!isClosed) {
+        setTimeout(() => {
+          connect();
+        }, reconnectDelay);
+        // 指数退避延迟
+        reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+      }
+    };
   };
 
-  eventSource.onerror = () => {
-    onError(new Error('连接中断'));
-    eventSource.close();
+  const close = () => {
+    isClosed = true;
+    eventSource?.close();
   };
 
-  return () => eventSource.close();
+  // 立即连接
+  connect();
+
+  return close;
 }
 
 // 获取下载文件 URL

@@ -1,0 +1,67 @@
+# 漫画下载器配置文件
+
+# 网络配置
+network:
+  # 代理配置 (可选)
+  proxy: null  # 例如: "http://localhost:8080"
+
+  # 超时设置（秒）
+  timeout:
+    connect: 30
+    read: 60
+    download: 300  # 下载超时时间（单张图片）
+
+  # 重试设置
+  retry:
+    max_attempts: 5
+    initial_delay: 1.0
+    max_delay: 10.0
+    exponential_base: 2
+
+# 下载配置
+download:
+  # 并发下载数量
+  concurrency: 5
+
+  # 下载目录
+  output_dir: "downloads"
+
+  # 是否启用压缩
+  enable_zip: true
+
+  # 文件命名格式
+  filename_format: "{chapter_name}_{page_number}.jpg"
+
+# 日志配置
+logging:
+  level: "INFO"  # DEBUG, INFO, WARNING, ERROR
+  format: "%(asctime)s [%(levelname)s] %(message)s"
+  file: "downloads/download.log"
+
+# 爬虫配置
+crawler:
+  # 请求头伪装
+  user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+  # 网站特定配置
+  websites:
+    manhuagui:
+      # 漫画柜特殊处理
+      use_playscript: true
+      wait_for_selector: ".comicPictureALLERY"
+
+# SSE 配置
+sse:
+  # 心跳间隔（秒）
+  heartbeat_interval: 2
+
+  # 缓冲区大小
+  buffer_size: 100
+
+# 历史记录配置
+history:
+  # 保留历史记录数量
+  max_items: 100
+
+  # 自动清理天数（0 表示不禁用）
+  auto_cleanup_days: 0

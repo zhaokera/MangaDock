@@ -29,6 +29,12 @@ except ImportError:
 from crawlers import get_crawler, get_supported_platforms, BaseCrawler
 from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 
+# 导入配置管理
+import config
+
+# 加载配置
+CONFIG = config.get_config()
+
 
 # ============== 数据模型 ==============
 
@@ -87,9 +93,35 @@ download_history: list[dict] = []
 # SSE 连接管理 - 存储每个任务的最后发送状态
 task_last_sse_state: dict[str, dict] = {}
 
-# 下载目录
-DOWNLOADS_DIR = Path("downloads")
+# 下载目录（从配置获取）
+DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
+
+# 历史记录文件
+HISTORY_FILE = DOWNLOADS_DIR / "history.json"
+
+
+def load_history() -> list[dict]:
+    """从文件加载历史记录"""
+    try:
+        if HISTORY_FILE.exists():
+            return json.loads(HISTORY_FILE.read_text(encoding='utf-8'))
+    except Exception as e:
+        print(f"加载历史记录失败: {e}")
+    return []
+
+
+def save_history(history: list[dict]) -> None:
+    """保存历史记录到文件"""
+    try:
+        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+        HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
+    except Exception as e:
+        print(f"保存历史记录失败: {e}")
+
+
+# 加载历史记录
+download_history = load_history()
 
 
 # ============== 下载器 ==============
@@ -184,7 +216,7 @@ class MangaDownloader:
 
         # 添加到历史
         if self.task.manga_info:
-            download_history.append({
+            history_item = {
                 "task_id": self.task.task_id,
                 "title": self.task.manga_info.get("title", "未知漫画"),
                 "chapter": self.task.manga_info.get("chapter", ""),
@@ -192,7 +224,11 @@ class MangaDownloader:
                 "zip_path": self.task.zip_path,
                 "page_count": self.task.total,
                 "created_at": self.task.created_at.isoformat()
-            })
+            }
+            # 避免重复添加
+            if not any(h.get("task_id") == history_item["task_id"] for h in download_history):
+                download_history.append(history_item)
+                save_history(download_history)
 
 
 # ============== API 端点 ==============
@@ -285,7 +321,7 @@ async def get_status(task_id: str):
 
 @app.get("/api/progress/{task_id}")
 async def stream_progress(task_id: str):
-    """SSE 进度推送 - 优化版，仅在状态变化时发送"""
+    """SSE 进度推送 - 优化版，仅在重要状态变化时发送"""
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -310,11 +346,33 @@ async def stream_progress(task_id: str):
         # 发送初始化状态
         last_state = task_last_sse_state.get(task_id, {})
 
+        def is_important_change(current, last) -> bool:
+            """判断是否是重要变化（过滤掉 message 的微小变化）"""
+            # 状态变化是重要事件
+            if current.get("status") != last.get("status"):
+                return True
+            # 错误变化是重要事件
+            if current.get("error") != last.get("error"):
+                return True
+            # progress 变化超过 10% 或跨过重要里程碑
+            if current.get("progress") != last.get("progress"):
+                return True
+            # total 变化（通常只在开始时）
+            if current.get("total") != last.get("total"):
+                return True
+            # message 只在包含关键词时发送（避免下载中 1/50 这种频繁变化）
+            msg_changed = current.get("message") != last.get("message")
+            if msg_changed:
+                important_keywords = ["检测到", "解码", "读取", "完成", "失败", "错误", "加载", "打包"]
+                msg = current.get("message", "")
+                return any(kw in msg for kw in important_keywords)
+            return False
+
         # 立即发送当前状态
         yield f"data: {get_task_data(task)}\n\n"
 
         while True:
-            # 检查任务状态是否变化
+            # 检查任务状态
             current_state = {
                 "status": task.status,
                 "progress": task.progress,
@@ -323,10 +381,8 @@ async def stream_progress(task_id: str):
                 "error": task.error,
             }
 
-            # 只有状态变化时才发送
-            state_changed = current_state != last_state
-
-            if state_changed:
+            # 只有重要状态变化时才发送
+            if is_important_change(current_state, last_state):
                 yield f"data: {get_task_data(task)}\n\n"
                 last_state = current_state.copy()
                 task_last_sse_state[task_id] = last_state
@@ -337,8 +393,7 @@ async def stream_progress(task_id: str):
                 break
 
             # 动态等待：状态稳定时延长间隔
-            # 未变化等待较久，变化后立即重置
-            wait_time = 2.0 if not state_changed else 0.1
+            wait_time = 2.0
             await asyncio.sleep(wait_time)
 
     def get_task_data(task):
@@ -354,7 +409,7 @@ async def stream_progress(task_id: str):
             "zip_path": task.zip_path,
             "error": task.error
         }
-        return json.dumps(data) + "\n\n"
+        return json.dumps(data, ensure_ascii=False) + "\n\n"
 
     return StreamingResponse(
         event_generator(),
@@ -400,8 +455,8 @@ if __name__ == "__main__":
     import uvicorn
 
     print("启动漫画下载服务...")
-    print("API: http://localhost:8000")
-    print("文档: http://localhost:8000/docs")
+    print(f"API: http://{CONFIG.host}:{CONFIG.port}")
+    print(f"文档: http://{CONFIG.host}:{CONFIG.port}/docs")
 
     # 显示支持的平台
     platforms = get_supported_platforms()
@@ -409,4 +464,10 @@ if __name__ == "__main__":
     for p in platforms:
         print(f"  - {p['display_name']}")
 
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    # 显示配置信息
+    print(f"\n配置:")
+    print(f"  - 下载目录: {CONFIG.download.output_dir}")
+    print(f"  - 并发数: {CONFIG.download.concurrency}")
+    print(f"  - 日志级别: {CONFIG.logging.level}")
+
+    uvicorn.run(app, host=CONFIG.host, port=CONFIG.port)
