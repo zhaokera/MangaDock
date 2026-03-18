@@ -4,7 +4,12 @@
 """
 
 from typing import List, Dict, Type, Optional
+from pathlib import Path
+import logging
+
 from .base import BaseCrawler
+
+logger = logging.getLogger(__name__)
 
 
 # 爬虫注册表
@@ -120,7 +125,7 @@ def _auto_register():
                 ):
                     register_crawler(attr)
         except Exception as e:
-            print(f"加载爬虫模块 {module_name} 失败: {e}")
+            logger.error(f"加载爬虫模块 {module_name} 失败: {e}")
 
 
 # 模块加载时自动注册

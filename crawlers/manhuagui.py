@@ -1201,8 +1201,8 @@ class ManhuaguiCrawler(BaseCrawler):
         # 下载图片 - 使用并发下载
         logger.debug(f" 开始并发下载，共 {total} 张图片")
 
-        # 从配置获取并发数
-        cfg = config.get_config()
+        # 从配置获取并发数（使用已读取的配置）
+        cfg = self.cfg or config.get_config()
         concurrency = cfg.download.concurrency
         max_retries = cfg.network.retry_max_attempts
 

@@ -23,7 +23,7 @@ try:
     from fastapi.responses import FileResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError:
-    print("请先安装 fastapi: pip install fastapi uvicorn")
+    logger.error("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
 
 # 设置日志

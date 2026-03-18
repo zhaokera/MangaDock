@@ -4,10 +4,13 @@
 """
 
 import os
+import logging
 import yaml
 from pathlib import Path
 from typing import Any, Dict, Optional
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,7 +97,7 @@ class ConfigManager:
     def _load_yaml_config(self):
         """从 YAML 文件加载配置"""
         if not self.config_path.exists():
-            print(f"配置文件不存在: {self.config_path}，使用默认配置")
+            logger.debug(f"配置文件不存在: {self.config_path}，使用默认配置")
             return
 
         try:
@@ -187,9 +190,9 @@ class ConfigManager:
                     self.config.port = server_data['port']
 
         except yaml.YAMLError as e:
-            print(f"加载 YAML 配置失败: {e}，使用默认配置")
+            logger.error(f"加载 YAML 配置失败: {e}，使用默认配置")
         except Exception as e:
-            print(f"读取配置文件失败: {e}，使用默认配置")
+            logger.error(f"读取配置文件失败: {e}，使用默认配置")
 
     def _load_env_config(self):
         """从环境变量加载配置（优先级更高）"""
@@ -268,7 +271,7 @@ def get_config() -> Config:
         # 验证配置
         errors = _config_manager.validate()
         if errors:
-            print(f"配置警告: {errors}")
+            logger.warning(f"配置警告: {errors}")
     return _config
 
 
@@ -279,5 +282,5 @@ def reload_config():
     # 验证配置
     errors = _config_manager.validate()
     if errors:
-        print(f"配置警告: {errors}")
+        logger.warning(f"配置警告: {errors}")
     return _config
