@@ -1352,7 +1352,7 @@ class ManhuaguiCrawler(BaseCrawler):
             # 出错时也继续，避免阻塞
             return True
 
-    async def _download_with_fastest_strategy(self,coroutines: list) -> bool:
+    async def _download_with_fastest_strategy(self, coroutines: list) -> bool:
         """
         并发下载策略 - 快速者优先
         同时启动多个下载任务，返回第一个完成的结果，取消其他任务
@@ -1382,22 +1382,22 @@ class ManhuaguiCrawler(BaseCrawler):
                             t.cancel()
                         return True
                 except Exception:
-                    continue
+                    pass
 
-            # 第一个完成的任务没有成功，等待所有任务完成
+            # 第一个完成的任务没有成功，取消所有剩余任务
             for task in pending:
                 task.cancel()
 
             # 等待所有任务真正取消
             await asyncio.gather(*tasks, return_exceptions=True)
 
-            # 检查是否有任何任务成功
+            # 检查是否有任何任务成功（重新检查已完成的任务）
             for task in done:
                 try:
                     if task.result():
                         return True
                 except Exception:
-                    continue
+                    pass
 
             return False
 
