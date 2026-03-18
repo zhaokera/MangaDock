@@ -162,7 +162,7 @@ def serialize_manga_info(info: Optional[Union[Dict, MangaInfo]]) -> Optional[str
 
 def deserialize_manga_info(json_str: Optional[str]) -> Optional[Dict]:
     """反序列化 JSON 字符串为 MangaInfo 字典"""
-    if json_str is None:
+    if json_str is None or json_str == "":
         return None
     return json.loads(json_str)
 
