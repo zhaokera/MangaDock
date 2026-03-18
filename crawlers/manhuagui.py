@@ -13,12 +13,16 @@ import base64
 import asyncio
 import time
 import datetime
+import logging
 from typing import Optional, List
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
 import config
+
+# 模块级日志记录器
+logger = logging.getLogger(__name__)
 
 
 # ============== 模块级常量 ==============
@@ -393,42 +397,42 @@ class ManhuaguiCrawler(BaseCrawler):
             # 只有当 img_data 包含有效的 files 数组时才返回
             if img_data and isinstance(img_data, dict) and img_data.get('files'):
                 files = img_data.get('files', [])
-                print(f"[DEBUG] 尝试 {attempt + 1}/7: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
+                logger.debug(f" 尝试 {attempt + 1}/7: 从 {img_data.get('source', 'unknown')} 获取到 {len(files)} 个文件")
 
                 # 只有当文件数量足够多时才返回（至少20个或等于总页数）
                 # 如果文件太少，继续尝试其他方法
                 if len(files) >= 20:
-                    print(f"[DEBUG] 文件数量足够 ({len(files)} >= 20)，返回配置")
+                    logger.debug(f" 文件数量足够 ({len(files)} >= 20)，返回配置")
                     return img_data
                 else:
-                    print(f"[DEBUG] 文件数量太少 ({len(files)} < 20)，继续尝试...")
+                    logger.debug(f" 文件数量太少 ({len(files)} < 20)，继续尝试...")
                     # 指数退避等待
                     if attempt < 6:
                         delay = 1 * (2 ** attempt)  # 1s, 2s, 4s, 8s, 16s, 32s
-                        print(f"[DEBUG] 等待 {delay}s 后重试...")
+                        logger.debug(f" 等待 {delay}s 后重试...")
                         await self.page.wait_for_timeout(delay * 1000)
                     continue
 
             # 没找到或太少，等待更长时间再试
-            print(f"[DEBUG] 尝试 {attempt + 1}/5: 未找到足够的数据，等待...")
+            logger.debug(f" 尝试 {attempt + 1}/5: 未找到足够的数据，等待...")
             await self.page.wait_for_timeout(1000)
 
         # 方法6: 从页面 HTML 中解析混淆的 JavaScript 配置
         try:
             page_content = await self.page.content()
-            print(f"[DEBUG] 页面内容长度: {len(page_content)}")
+            logger.debug(f" 页面内容长度: {len(page_content)}")
 
             # 查找页面中的页数信息
             page_match = re.search(r'/(\d+)\)\s*</span>', page_content)
             total_pages = int(page_match.group(1)) if page_match else 0
-            print(f"[DEBUG] 从页面提取到总页数: {total_pages}")
+            logger.debug(f" 从页面提取到总页数: {total_pages}")
 
             # 尝试解析 V.S({...}) 格式的配置
             # 格式: V.S({"w":4,"v":"u","p":["o.2.3",...],"J":"/I/5/6/4/7/",...})
             vs_match = re.search(r'V\.S\(\{[^}]*"p"\s*:\s*\[(.*?)\][^}]*\}\)', page_content, re.DOTALL)
             if vs_match:
                 config_str = vs_match.group(0)
-                print(f"[DEBUG] 找到 V.S 配置: {config_str[:200]}...")
+                logger.debug(f" 找到 V.S 配置: {config_str[:200]}...")
 
                 # 提取 p 数组（图片文件列表）
                 p_match = re.search(r'"p"\s*:\s*\[(.*?)\]', config_str, re.DOTALL)
@@ -440,7 +444,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
                     if files:
                         path = j_match.group(1) if j_match else ""
-                        print(f"[DEBUG] 从 V.S 配置提取到 {len(files)} 个文件, path={path}")
+                        logger.debug(f" 从 V.S 配置提取到 {len(files)} 个文件, path={path}")
                         return {
                             'files': files,
                             'path': path,
@@ -469,7 +473,7 @@ class ManhuaguiCrawler(BaseCrawler):
                 }
             ''')
             if smh_check and smh_check.get('files'):
-                print(f"[DEBUG] 从 {smh_check.get('source')} 获取到 {len(smh_check.get('files', []))} 个文件")
+                logger.debug(f" 从 {smh_check.get('source')} 获取到 {len(smh_check.get('files', []))} 个文件")
                 return smh_check
 
             # 查找 "n" 数组（图片文件列表）在混淆代码中
@@ -482,7 +486,7 @@ class ManhuaguiCrawler(BaseCrawler):
                 path = l_match.group(1) if l_match else ""
 
                 if files:
-                    print(f"[DEBUG] 从混淆代码提取到 {len(files)} 个文件, path={path[:50]}...")
+                    logger.debug(f" 从混淆代码提取到 {len(files)} 个文件, path={path[:50]}...")
                     return {
                         'files': files,
                         'path': path,
@@ -494,11 +498,11 @@ class ManhuaguiCrawler(BaseCrawler):
             # 格式: window["\x65\x76\x61\x6c"](function(p,a,c,k,e,d){...})('Z.X({...}...)')
             # 注意：此方法需要 comic_id 和 chapter_id，在 _extract_img_config 中没有这些变量
             # 因此此方法由 _do_download 中处理
-            print(f"[DEBUG] 尝试从 eval 加密脚本中提取图片数据... (跳过，需要 comic_id)")
+            logger.debug(f" 尝试从 eval 加密脚本中提取图片数据... (跳过，需要 comic_id)")
         except Exception as e:
-            print(f"[DEBUG] 解析混淆代码失败: {e}")
+            logger.debug(f" 解析混淆代码失败: {e}")
 
-        print(f"[DEBUG] 无法从页面提取图片配置")
+        logger.debug(f" 无法从页面提取图片配置")
         return img_data
 
     async def _get_actual_image_urls(self, url: str) -> List[str]:
@@ -624,7 +628,7 @@ class ManhuaguiCrawler(BaseCrawler):
         # 记录开始时间
         start_time = time.time()
         current_time = time.strftime('%H:%M:%S', time.localtime())
-        print(f"[DEBUG] 下载任务开始: {current_time}")
+        logger.debug(f" 下载任务开始: {current_time}")
 
         # 访问页面 (带重试机制)
         report(DownloadProgress(message="正在加载页面...", status="downloading"))
@@ -637,10 +641,10 @@ class ManhuaguiCrawler(BaseCrawler):
                 page_load_success = True
                 break
             except Exception as e:
-                print(f"页面加载失败 (尝试 {attempt}/3): {type(e).__name__}")
+                logger.info(f"页面加载失败 (尝试 {attempt}/3): {type(e).__name__}")
                 if attempt < 4:
                     delay = 2 * (2 ** (attempt - 1))  # 2s, 4s, 8s
-                    print(f"等待 {delay}s 后重试...")
+                    logger.info(f"等待 {delay}s 后重试...")
                     await self.page.wait_for_timeout(delay * 1000)
 
         # 如果 load 失败，尝试 domcontentloaded
@@ -679,14 +683,14 @@ class ManhuaguiCrawler(BaseCrawler):
         # 如果图片配置不足20张，尝试直接从页面 Z.X 配置中提取
         if (not img_config or not isinstance(img_config, dict) or
             not img_config.get('files') or len(img_config.get('files', [])) < 20):
-            print(f"[DEBUG] 初始配置不足 ({img_config.get('files', []) if img_config else 'None'}), 尝试从 Z.X 配置中提取...")
+            logger.debug(f" 初始配置不足 ({img_config.get('files', []) if img_config else 'None'}), 尝试从 Z.X 配置中提取...")
             try:
                 page_content = await self.page.content()
                 # 方法8: 尝试从 Z.X({...}) 格式的配置中提取
                 zx_match = re.search(r'Z\.X\(\s*(\{[^}]+\})', page_content, re.DOTALL)
                 if zx_match:
                     config_str = zx_match.group(1)
-                    print(f"[DEBUG] 找到 Z.X 配置，长度: {len(config_str)}")
+                    logger.debug(f" 找到 Z.X 配置，长度: {len(config_str)}")
 
                     # 尝试从配置中提取 q 数组（文件列表）和 Y 字段（路径）
                     q_match = re.search(r'"q"\s*:\s*\[(.*?)\]', config_str, re.DOTALL)
@@ -700,7 +704,7 @@ class ManhuaguiCrawler(BaseCrawler):
                         if files:
                             # 路径格式如 "/M/L/N/4/5/"，需要转换为实际路径
                             path_raw = y_match.group(1) if y_match else ""
-                            print(f"[DEBUG] 从 Z.X 配置提取到 {len(files)} 个文件, path_raw={path_raw}")
+                            logger.debug(f" 从 Z.X 配置提取到 {len(files)} 个文件, path_raw={path_raw}")
 
                             # 解码路径
                             path_parts = path_raw.strip('/').split('/')
@@ -725,7 +729,7 @@ class ManhuaguiCrawler(BaseCrawler):
                                 return int(match.group(1)) if match else 0
                             converted_files.sort(key=get_page_num)
 
-                            print(f"[DEBUG] 转换后文件: {converted_files[:5]}...")
+                            logger.debug(f" 转换后文件: {converted_files[:5]}...")
 
                             img_config = {
                                 'files': converted_files,
@@ -734,7 +738,7 @@ class ManhuaguiCrawler(BaseCrawler):
                                 'is_encoded': True
                             }
             except Exception as e:
-                print(f"[DEBUG] 从 Z.X 配置提取失败: {e}")
+                logger.debug(f" 从 Z.X 配置提取失败: {e}")
 
         if img_config and isinstance(img_config, dict) and 'files' in img_config:
             files = img_config['files']
@@ -743,7 +747,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
             if is_encoded:
                 # 文件名需要解码
-                print(f"[DEBUG] 检测到编码配置，尝试解码或加载 {len(files)} 张图片")
+                logger.debug(f" 检测到编码配置，尝试解码或加载 {len(files)} 张图片")
                 report(DownloadProgress(message=f"检测到编码配置，尝试解码...", status="downloading"))
 
                 total_pages = img_config.get('total_pages', len(files))
@@ -751,7 +755,7 @@ class ManhuaguiCrawler(BaseCrawler):
                     total_pages = len(files)
 
                 # 首先尝试等待 JavaScript 解码完成后再读取 SMH.imgData
-                print(f"[DEBUG] 等待 JavaScript 解码完成...")
+                logger.debug(f" 等待 JavaScript 解码完成...")
                 await self.page.wait_for_timeout(5000)
 
                 # 尝试再次读取 SMH.imgData（可能已经被解码）
@@ -772,12 +776,12 @@ class ManhuaguiCrawler(BaseCrawler):
                     }
                 ''')
 
-                print(f"[DEBUG] decoded_config = {decoded_config}")
+                logger.debug(f" decoded_config = {decoded_config}")
 
                 if decoded_config and decoded_config.get('files'):
                     decoded_files = decoded_config.get('files', [])
                     decoded_path = decoded_config.get('path', '')
-                    print(f"[DEBUG] JavaScript 解码成功! 获取到 {len(decoded_files)} 个文件, path={decoded_path}")
+                    logger.debug(f" JavaScript 解码成功! 获取到 {len(decoded_files)} 个文件, path={decoded_path}")
 
                     # 使用解码后的数据构造 URL
                     for filename in decoded_files:
@@ -793,7 +797,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
                 else:
                     # JavaScript 解码失败，尝试网络拦截捕获
-                    print(f"[DEBUG] JavaScript 未解码，尝试触发图片加载...")
+                    logger.debug(f" JavaScript 未解码，尝试触发图片加载...")
                     report(DownloadProgress(message=f"正在加载所有 {total_pages} 页...", status="downloading"))
 
                     # 使用网络拦截捕获所有图片
@@ -806,12 +810,12 @@ class ManhuaguiCrawler(BaseCrawler):
                             # 过滤掉非图片请求
                             if any(ext in resp_url.lower() for ext in ['.jpg', '.png', '.webp', '.gif']):
                                 captured_urls.append(resp_url)
-                                print(f"[DEBUG] 捕获图片 #{len(captured_urls)}: {resp_url[:80]}...")
+                                logger.debug(f" 捕获图片 #{len(captured_urls)}: {resp_url[:80]}...")
 
                     self.page.on("response", capture_img)
 
                     try:
-                        print(f"[DEBUG] 开始触发图片加载，目标页数: {total_pages}")
+                        logger.debug(f" 开始触发图片加载，目标页数: {total_pages}")
 
                         # 方法1: 点击页面上的下一页按钮
                         for attempt in range(3):
@@ -822,14 +826,14 @@ class ManhuaguiCrawler(BaseCrawler):
                                 # 尝试找到图片容器并点击
                                 img_container = await self.page.query_selector('#manga, .manga, #img, .comic-img, img[src*="hamreus"]')
                                 if img_container:
-                                    print(f"[DEBUG] 找到图片容器，尝试点击")
+                                    logger.debug(f" 找到图片容器，尝试点击")
                                     await img_container.click()
                                     await self.page.wait_for_timeout(500)
                             except Exception as e:
-                                print(f"[DEBUG] 点击容器失败: {e}")
+                                logger.debug(f" 点击容器失败: {e}")
 
                         # 方法2: 使用键盘右箭头
-                        print(f"[DEBUG] 使用键盘触发加载")
+                        logger.debug(f" 使用键盘触发加载")
                         # 动态等待：只在捕获新图片时等待，否则跳过
                         base_wait_time = 200  # 减少基础等待时间
                         for page_num in range(max(total_pages + 15, 30)):  # 增加点击次数
@@ -844,19 +848,19 @@ class ManhuaguiCrawler(BaseCrawler):
 
                                 # 每5页检查一下进度
                                 if page_num % 5 == 0 and captured_urls:
-                                    print(f"[DEBUG] 已触发 {page_num} 次，捕获 {len(captured_urls)} 张图片")
+                                    logger.debug(f" 已触发 {page_num} 次，捕获 {len(captured_urls)} 张图片")
                             except Exception as e:
-                                print(f"[DEBUG] 键盘事件失败: {e}")
+                                logger.debug(f" 键盘事件失败: {e}")
 
                         # 方法3: 滚动触发 - 减少次数和等待时间
-                        print(f"[DEBUG] 尝试滚动触发")
+                        logger.debug(f" 尝试滚动触发")
                         for _ in range(5):  # 减少到 5 次
                             await self.page.evaluate("window.scrollBy(0, 500)")
                             await self.page.wait_for_timeout(200)  # 减少到 200ms
 
                         # 额外等待确保最后几张图片加载 - 减少等待时间
                         await self.page.wait_for_timeout(2000)  # 从 5秒 减少到 2秒
-                        print(f"[DEBUG] 完成触发，共捕获 {len(captured_urls)} 张图片")
+                        logger.debug(f" 完成触发，共捕获 {len(captured_urls)} 张图片")
 
                     finally:
                         try:
@@ -867,7 +871,7 @@ class ManhuaguiCrawler(BaseCrawler):
                             pass
 
                     # 处理捕获的 URL
-                    print(f"[DEBUG] 开始处理捕获的 URL...")
+                    logger.debug(f" 开始处理捕获的 URL...")
                     if captured_urls:
                         # 去重并保持顺序
                         unique_urls = list(dict.fromkeys(captured_urls))
@@ -880,7 +884,7 @@ class ManhuaguiCrawler(BaseCrawler):
                         unique_urls.sort(key=get_page_num)
                         image_urls = unique_urls
                         total = len(image_urls)
-                        print(f"[DEBUG] URL 处理完成，共 {total} 张图片")
+                        logger.debug(f" URL 处理完成，共 {total} 张图片")
                         report(DownloadProgress(message=f"捕获到 {total} 张图片", status="downloading"))
                     else:
                         report(DownloadProgress(message="未捕获到图片，尝试备用方法...", status="downloading"))
@@ -925,9 +929,9 @@ class ManhuaguiCrawler(BaseCrawler):
                 report(DownloadProgress(message=f"从 JS 配置获取到 {total} 张图片", status="downloading"))
 
         # 如果 JS 配置获取的图片太少，尝试通过网络拦截获取更多
-        print(f"[DEBUG] 检查是否需要补充拦截 (当前 {len(image_urls)} 张)...")
+        logger.debug(f" 检查是否需要补充拦截 (当前 {len(image_urls)} 张)...")
         if image_urls and len(image_urls) < 10:
-            print(f"[DEBUG] JS 配置图片太少 ({len(image_urls)}), 尝试网络拦截补充...")
+            logger.debug(f" JS 配置图片太少 ({len(image_urls)}), 尝试网络拦截补充...")
 
             # 延迟一下让页面加载更多图片
             await self.page.wait_for_timeout(2000)
@@ -945,7 +949,7 @@ class ManhuaguiCrawler(BaseCrawler):
                         if resp_url not in current_urls:
                             intercepted_urls.append(resp_url)
                             current_urls.add(resp_url)
-                            print(f"[DEBUG] 补充拦截图片 #{len(intercepted_urls)}: {resp_url[:60]}...")
+                            logger.debug(f" 补充拦截图片 #{len(intercepted_urls)}: {resp_url[:60]}...")
 
             self.page.on("response", handle_response)
 
@@ -963,7 +967,7 @@ class ManhuaguiCrawler(BaseCrawler):
             # 添加补充的图片
             if intercepted_urls:
                 image_urls.extend(intercepted_urls)
-                print(f"[DEBUG] 网络拦截补充了 {len(intercepted_urls)} 张图片")
+                logger.debug(f" 网络拦截补充了 {len(intercepted_urls)} 张图片")
 
             # 移除监听器
             try:
@@ -973,14 +977,14 @@ class ManhuaguiCrawler(BaseCrawler):
                 pass
 
         # 调试输出当前图片数量
-        print(f"[DEBUG] 当前图片总数: {len(image_urls)}")
-        print(f"[DEBUG] 准备开始下载...")
+        logger.debug(f" 当前图片总数: {len(image_urls)}")
+        logger.debug(f" 准备开始下载...")
 
         # 方法2: 如果 JS 配置获取的图片太少（少于20张），使用 SMH.utils.goPage() 翻页
         # 注意：你的日志显示有 25 张图片，所以这部分应该被跳过
-        print(f"[DEBUG] 检查图片数量是否 < 20 (当前 {len(image_urls)} 张)...")
+        logger.debug(f" 检查图片数量是否 < 20 (当前 {len(image_urls)} 张)...")
         if image_urls and len(image_urls) < 20:
-            print(f"[DEBUG] JS 配置图片数量不足 ({len(image_urls)}), 使用 SMH.utils.goPage() 获取所有图片...")
+            logger.debug(f" JS 配置图片数量不足 ({len(image_urls)}), 使用 SMH.utils.goPage() 获取所有图片...")
             report(DownloadProgress(message="使用 SMH 翻页获取所有图片...", status="downloading"))
 
             # 获取总页数
@@ -995,7 +999,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
             # 使用 SMH.utils.goPage() 翻页，捕获所有图片 URL
             seen_urls = set(image_urls)
-            print(f"[DEBUG] 初始图片数量: {len(image_urls)}, 目标页数: {total_pages}")
+            logger.debug(f" 初始图片数量: {len(image_urls)}, 目标页数: {total_pages}")
 
             # 先检查 SMH.utils.goPage 函数是否存在
             goPage_exists = await self.page.evaluate('''
@@ -1003,7 +1007,7 @@ class ManhuaguiCrawler(BaseCrawler):
                     return typeof SMH !== 'undefined' && typeof SMH.utils !== 'undefined' && typeof SMH.utils.goPage === 'function';
                 }
             ''')
-            print(f"[DEBUG] SMH.utils.goPage 函数存在: {goPage_exists}")
+            logger.debug(f" SMH.utils.goPage 函数存在: {goPage_exists}")
 
             for page_num in range(2, total_pages + 1):
                 try:
@@ -1014,7 +1018,7 @@ class ManhuaguiCrawler(BaseCrawler):
                             return pageSpan ? pageSpan.innerText : 'unknown';
                         }
                     ''')
-                    print(f"[DEBUG] 翻页前: 第 {prev_page} 页")
+                    logger.debug(f" 翻页前: 第 {prev_page} 页")
 
                     await self.page.evaluate(f'SMH.utils.goPage({page_num})')
                     await asyncio.sleep(2)
@@ -1026,7 +1030,7 @@ class ManhuaguiCrawler(BaseCrawler):
                             return pageSpan ? pageSpan.innerText : 'unknown';
                         }
                     ''')
-                    print(f"[DEBUG] 翻页后验证: 实际在第 {current_page} 页 (期望第 {page_num} 页)")
+                    logger.debug(f" 翻页后验证: 实际在第 {current_page} 页 (期望第 {page_num} 页)")
 
                     # 获取当前页的图片 URL
                     current_img = await self.page.evaluate('''
@@ -1045,22 +1049,22 @@ class ManhuaguiCrawler(BaseCrawler):
                                 .map(img => img.src);
                         }
                     ''')
-                    print(f"[DEBUG] 页面上发现 {len(all_imgs)} 个 hamreus 图片")
+                    logger.debug(f" 页面上发现 {len(all_imgs)} 个 hamreus 图片")
 
                     if current_img and 'hamreus' in current_img and current_img not in seen_urls:
                         image_urls.append(current_img)
                         seen_urls.add(current_img)
-                        print(f"[DEBUG] 翻页到第 {page_num} 页，捕获图片: {current_img.split('/')[-1].split('?')[0]}")
+                        logger.debug(f" 翻页到第 {page_num} 页，捕获图片: {current_img.split('/')[-1].split('?')[0]}")
                     else:
-                        print(f"[DEBUG] 警告: 第 {page_num} 页未捕获新图片 (current_img exists: {current_img is not None}, in seen: {current_img in seen_urls if current_img else 'N/A'})")
+                        logger.debug(f" 警告: 第 {page_num} 页未捕获新图片 (current_img exists: {current_img is not None}, in seen: {current_img in seen_urls if current_img else 'N/A'})")
 
                 except Exception as e:
-                    print(f"[DEBUG] 翻页到第 {page_num} 页失败: {e}")
+                    logger.debug(f" 翻页到第 {page_num} 页失败: {e}")
                     import traceback
                     traceback.print_exc()
                     break
 
-            print(f"[DEBUG] SMH 翻页后图片数量: {len(image_urls)}")
+            logger.debug(f" SMH 翻页后图片数量: {len(image_urls)}")
 
             # 去重但保持顺序
             seen = set()
@@ -1072,7 +1076,7 @@ class ManhuaguiCrawler(BaseCrawler):
             image_urls = unique_urls
 
             total = len(image_urls)
-            print(f"[DEBUG] 去重后图片数量: {total}")
+            logger.debug(f" 去重后图片数量: {total}")
             report(DownloadProgress(message=f"从 SMH 翻页获取到 {total} 张图片", status="downloading"))
 
         # 方法3: 如果 JS 配置提取失败，尝试从页面内容正则匹配
@@ -1110,11 +1114,11 @@ class ManhuaguiCrawler(BaseCrawler):
                             pass
 
             except Exception as e:
-                print(f"正则解析配置失败: {e}")
+                logger.info(f"正则解析配置失败: {e}")
 
         # 方法3: 设置响应拦截器作为最后的后备方案
         if not image_urls:
-            print("[DEBUG] 方法3: 使用网络拦截捕获图片...")
+            logger.debug("方法3: 使用网络拦截捕获图片...")
             report(DownloadProgress(message="使用网络拦截捕获图片...", status="downloading"))
 
             intercepted_urls = []
@@ -1124,13 +1128,13 @@ class ManhuaguiCrawler(BaseCrawler):
                 if any(ext in resp_url for ext in ['.jpg', '.jpeg', '.png', '.webp', '.gif']):
                     if 'hamreus' in resp_url or 'manhua' in resp_url:
                         intercepted_urls.append(str(response.url))
-                        print(f"[DEBUG] 拦截图片 #{len(intercepted_urls)}")
+                        logger.debug(f" 拦截图片 #{len(intercepted_urls)}")
 
             self.page.on("response", handle_response)
 
             try:
                 # 多种触发方式
-                print("[DEBUG] 尝试多种触发方式...")
+                logger.debug("尝试多种触发方式...")
 
                 # 滚动
                 for _ in range(15):
@@ -1152,7 +1156,7 @@ class ManhuaguiCrawler(BaseCrawler):
                 await self.page.wait_for_timeout(3000)
 
                 image_urls = intercepted_urls
-                print(f"[DEBUG] 方法3捕获到 {len(image_urls)} 张图片")
+                logger.debug(f" 方法3捕获到 {len(image_urls)} 张图片")
             finally:
                 # 移除监听器
                 try:
@@ -1178,7 +1182,7 @@ class ManhuaguiCrawler(BaseCrawler):
         # 记录准备开始下载的时间
         prepare_end_time = time.time()
         prepare_duration = prepare_end_time - start_time
-        print(f"[DEBUG] 准备阶段耗时: {prepare_duration:.2f}秒")
+        logger.debug(f" 准备阶段耗时: {prepare_duration:.2f}秒")
 
         # 创建保存目录
         safe_title = self.sanitize_filename(f"{comic_title}_{chapter_title}")
@@ -1195,7 +1199,7 @@ class ManhuaguiCrawler(BaseCrawler):
         await asyncio.sleep(0.5)  # 短暂延迟让前端更新
 
         # 下载图片 - 使用并发下载
-        print(f"[DEBUG] 开始并发下载，共 {total} 张图片")
+        logger.debug(f" 开始并发下载，共 {total} 张图片")
 
         # 从配置获取并发数
         cfg = config.get_config()
@@ -1280,7 +1284,7 @@ class ManhuaguiCrawler(BaseCrawler):
         success_count = sum(results)
 
         # 按原始序号重命名文件（只重命名成功的）
-        print(f"[DEBUG] 正在重命名文件...")
+        logger.debug(f" 正在重命名文件...")
         renamed_count = 0
         for i, (temp_filename, (orig_idx, img_url, ext)) in enumerate(temp_file_mapping.items()):
             temp_path = save_dir / temp_filename
@@ -1290,10 +1294,10 @@ class ManhuaguiCrawler(BaseCrawler):
                 temp_path.rename(new_path)
                 renamed_count += 1
 
-        print(f"[DEBUG] 文件重命名完成: {renamed_count}/{len(temp_file_mapping)}")
+        logger.debug(f" 文件重命名完成: {renamed_count}/{len(temp_file_mapping)}")
 
         # 输出下载结果
-        print(f"[DEBUG] 并发下载完成: {success_count}/{total} 张图片成功")
+        logger.debug(f" 并发下载完成: {success_count}/{total} 张图片成功")
 
         # 最终进度报告
         report(DownloadProgress(
@@ -1307,9 +1311,9 @@ class ManhuaguiCrawler(BaseCrawler):
         end_time = time.time()
         total_duration = end_time - start_time
         current_time = time.strftime('%H:%M:%S', time.localtime())
-        print(f"[DEBUG] 下载任务结束: {current_time}")
-        print(f"[DEBUG] 总耗时: {total_duration:.2f}秒")
-        print(f"[DEBUG] 平均速度: {total_duration/total:.2f}秒/张" if total > 0 else "[DEBUG] 无图片下载")
+        logger.debug(f" 下载任务结束: {current_time}")
+        logger.debug(f" 总耗时: {total_duration:.2f}秒")
+        logger.debug(f" 平均速度: {total_duration/total:.2f}秒/张" if total > 0 else "[DEBUG] 无图片下载")
 
         return str(save_dir)
 
@@ -1344,7 +1348,7 @@ class ManhuaguiCrawler(BaseCrawler):
             # 超时也继续，避免阻塞
             return True
         except Exception as e:
-            print(f"[DEBUG] 动态等待页面就绪异常: {e}")
+            logger.debug(f" 动态等待页面就绪异常: {e}")
             # 出错时也继续，避免阻塞
             return True
 

@@ -11,6 +11,7 @@ import os
 import re
 import zipfile
 import uuid
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -24,6 +25,14 @@ try:
 except ImportError:
     print("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
+
+# 设置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # 导入爬虫模块
 from crawlers import get_crawler, get_supported_platforms, BaseCrawler
@@ -96,6 +105,10 @@ task_last_sse_state: dict[str, dict] = {}
 # 全局状态锁 - 保护并发访问
 _state_lock = asyncio.Lock()
 
+# 浏览器池 - 存储每个爬虫类型的浏览器实例
+_browser_pool: dict[str, dict] = {}
+_browser_pool_lock = asyncio.Lock()
+
 # 下载目录（从配置获取）
 DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
@@ -104,13 +117,117 @@ DOWNLOADS_DIR.mkdir(exist_ok=True)
 HISTORY_FILE = DOWNLOADS_DIR / "history.json"
 
 
+async def get_browser_for_platform(platform: str) -> dict:
+    """
+    获取指定平台的浏览器实例（从池中获取或创建新实例）
+
+    Args:
+        platform: 平台名称
+
+    Returns:
+        dict: 包含 browser, context, page 的字典
+    """
+    import config
+    from playwright.async_api import async_playwright
+
+    async with _browser_pool_lock:
+        if platform in _browser_pool:
+            return _browser_pool[platform]
+
+        # 创建新的浏览器实例
+        cfg = config.get_config()
+        playwright = await async_playwright().start()
+        browser = await playwright.chromium.launch(
+            headless=True,
+            channel="chrome",
+            args=cfg.crawler.browser_args
+        )
+        context = await browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            user_agent=cfg.crawler.user_agent or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+        )
+        page = await context.new_page()
+
+        browser_info = {
+            "playwright": playwright,
+            "browser": browser,
+            "context": context,
+            "page": page,
+            "platform": platform,
+            "used_count": 0
+        }
+
+        _browser_pool[platform] = browser_info
+        logger.info(f"为平台 {platform} 创建新浏览器实例")
+        return browser_info
+
+
+async def release_browser_for_platform(platform: str):
+    """
+    释放指定平台的浏览器实例
+
+    Args:
+        platform: 平台名称
+    """
+    async with _browser_pool_lock:
+        if platform in _browser_pool:
+            browser_info = _browser_pool[platform]
+            browser_info["used_count"] = max(0, browser_info["used_count"] - 1)
+
+            # 如果使用次数为0且距离上次使用超过5分钟，关闭浏览器
+            logger.debug(f"平台 {platform} 浏览器使用次数: {browser_info['used_count']}")
+
+            if browser_info["used_count"] <= 0:
+                try:
+                    if browser_info["page"]:
+                        await browser_info["page"].close()
+                    if browser_info["context"]:
+                        await browser_info["context"].close()
+                    if browser_info["browser"]:
+                        await browser_info["browser"].close()
+                    if browser_info["playwright"]:
+                        await browser_info["playwright"].stop()
+                except Exception as e:
+                    logger.error(f"释放平台 {platform} 浏览器失败: {e}")
+                finally:
+                    del _browser_pool[platform]
+                    logger.info(f"平台 {platform} 浏览器已释放")
+
+
+async def init_browser_for_crawler(crawler: BaseCrawler, platform: str):
+    """
+    初始化爬虫的浏览器实例（从池中获取）
+
+    Args:
+        crawler: 爬虫实例
+        platform: 平台名称
+    """
+    browser_info = await get_browser_for_platform(platform)
+    crawler.browser = browser_info["browser"]
+    crawler.context = browser_info["context"]
+    crawler.page = browser_info["page"]
+    crawler.playwright = browser_info["playwright"]
+    crawler.cfg = config.get_config()  # 设置配置
+    browser_info["used_count"] += 1
+
+
+async def cleanup_browser_pool():
+    """清理浏览器池中长时间未使用的浏览器"""
+    import time
+    async with _browser_pool_lock:
+        for platform, browser_info in list(_browser_pool.items()):
+            if browser_info["used_count"] <= 0:
+                # 标记为待清理
+                browser_info["used_count"] = -1
+
+
 def load_history() -> list[dict]:
     """从文件加载历史记录"""
     try:
         if HISTORY_FILE.exists():
             return json.loads(HISTORY_FILE.read_text(encoding='utf-8'))
     except Exception as e:
-        print(f"加载历史记录失败: {e}")
+        logger.error(f"加载历史记录失败: {e}")
     return []
 
 
@@ -120,7 +237,7 @@ def save_history(history: list[dict]) -> None:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception as e:
-        print(f"保存历史记录失败: {e}")
+        logger.error(f"保存历史记录失败: {e}")
 
 
 async def save_history_async(history: list[dict]) -> None:
@@ -160,7 +277,7 @@ def cleanup_old_history():
             download_history = [h for h in download_history if datetime.fromisoformat(h.get('created_at', datetime.now().isoformat())) > cutoff_date]
             save_history(download_history)
     except Exception as e:
-        print(f"清理历史记录失败: {e}")
+        logger.error(f"清理历史记录失败: {e}")
 
 
 # 加载历史记录
@@ -188,6 +305,9 @@ class MangaDownloader:
             self.crawler = get_crawler(self.task.url)
             self.task.platform = self.crawler.PLATFORM_NAME
 
+            # 初始化爬虫的浏览器实例（从池中获取）
+            await init_browser_for_crawler(self.crawler, self.task.platform)
+
             await self._do_download()
         except ValueError as e:
             self.task.status = "failed"
@@ -200,6 +320,13 @@ class MangaDownloader:
             import traceback
             traceback.print_exc()
         finally:
+            # 任务完成或失败后清理浏览器引用
+            if self.crawler:
+                # 释放浏览器引用，不立即关闭（浏览器池会管理）
+                self.crawler.browser = None
+                self.crawler.context = None
+                self.crawler.page = None
+                self.crawler.playwright = None
             # 任务完成或失败后清理 tasks 字典和 SSE 状态
             self._cleanup_task()
 
@@ -529,20 +656,20 @@ async def get_history(page: int = 1, page_size: int = 50):
 if __name__ == "__main__":
     import uvicorn
 
-    print("启动漫画下载服务...")
-    print(f"API: http://{CONFIG.host}:{CONFIG.port}")
-    print(f"文档: http://{CONFIG.host}:{CONFIG.port}/docs")
+    logger.info("启动漫画下载服务...")
+    logger.info(f"API: http://{CONFIG.host}:{CONFIG.port}")
+    logger.info(f"文档: http://{CONFIG.host}:{CONFIG.port}/docs")
 
     # 显示支持的平台
     platforms = get_supported_platforms()
-    print("\n支持的平台:")
+    logger.info("支持的平台:")
     for p in platforms:
-        print(f"  - {p['display_name']}")
+        logger.info(f"  - {p['display_name']}")
 
     # 显示配置信息
-    print(f"\n配置:")
-    print(f"  - 下载目录: {CONFIG.download.output_dir}")
-    print(f"  - 并发数: {CONFIG.download.concurrency}")
-    print(f"  - 日志级别: {CONFIG.logging.level}")
+    logger.info(f"配置:")
+    logger.info(f"  - 下载目录: {CONFIG.download.output_dir}")
+    logger.info(f"  - 并发数: {CONFIG.download.concurrency}")
+    logger.info(f"  - 日志级别: {CONFIG.logging.level}")
 
     uvicorn.run(app, host=CONFIG.host, port=CONFIG.port)
