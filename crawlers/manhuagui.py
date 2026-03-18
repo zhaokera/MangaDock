@@ -1294,7 +1294,9 @@ class ManhuaguiCrawler(BaseCrawler):
 
                 return success
 
-        # 创建所有下载任务
+        # 创建所有下载任务 - 使用URL哈希作为临时文件名
+        import hashlib
+        temp_file_mapping = {}  # {temp_filename: original_index}
         tasks = []
         for i, img_url in enumerate(image_urls, 1):
             ext = ".jpg"
@@ -1305,14 +1307,39 @@ class ManhuaguiCrawler(BaseCrawler):
             elif ".gif" in img_url.lower():
                 ext = ".gif"
 
-            filename = f"{i:03d}{ext}"
-            filepath = save_dir / filename
-            tasks.append(download_with_semaphore(img_url, filepath, page_url, i, total))
+            # 使用URL哈希作为临时文件名，避免序号混乱
+            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:8]
+            temp_filename = f"{url_hash}{ext}.tmp"
+            temp_filepath = save_dir / temp_filename
+            temp_file_mapping[temp_filename] = i  # 记录映射关系
+            tasks.append(download_with_semaphore(img_url, temp_filepath, page_url, i, total))
 
         # 并发执行所有下载任务
         results = await asyncio.gather(*tasks)
 
         success_count = sum(results)
+
+        # 按原始序号重命名文件
+        print(f"[DEBUG] 正在重命名文件...")
+        for i, img_url in enumerate(image_urls, 1):
+            ext = ".jpg"
+            if ".webp" in img_url.lower():
+                ext = ".webp"
+            elif ".png" in img_url.lower():
+                ext = ".png"
+            elif ".gif" in img_url.lower():
+                ext = ".gif"
+
+            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:8]
+            temp_filename = f"{url_hash}{ext}.tmp"
+            new_filename = f"{i:03d}{ext}"
+            temp_path = save_dir / temp_filename
+            new_path = save_dir / new_filename
+
+            if temp_path.exists():
+                temp_path.rename(new_path)
+
+        print(f"[DEBUG] 文件重命名完成")
 
         # 输出下载结果
         print(f"[DEBUG] 并发下载完成: {success_count}/{total} 张图片成功")

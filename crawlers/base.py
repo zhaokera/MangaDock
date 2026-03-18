@@ -87,12 +87,12 @@ class BaseCrawler(ABC):
         cfg = config.get_config()
 
         if self.http_client is None or self.http_client.is_closed:
-            # 创建带连接池限制的传输层
+            # 优化连接池配置：增加大小和 keepalive 超时
             transport = httpx.AsyncHTTPTransport(
                 limits=httpx.Limits(
-                    max_connections=10,
-                    max_keepalive_connections=5,
-                    keepalive_expiry=30.0
+                    max_connections=20,  # 从 10 增加
+                    max_keepalive_connections=10,  # 从 5 增加
+                    keepalive_expiry=60.0  # 从 30 增加
                 )
             )
 
@@ -323,14 +323,11 @@ class BaseCrawler(ABC):
                 }, timeout=httpx.Timeout(None, read=cfg.network.timeout_connect))  # 使用配置的超时
 
                 if response.ok:
-                    # 流式读取
-                    body = b""
-                    async for chunk in response.iter_bytes(8192):
-                        body += chunk
-
-                    if len(body) > 0:
-                        filepath.write_bytes(body)
-                        return True
+                    # 流式写入文件，不缓存到内存
+                    with filepath.open('wb') as f:
+                        async for chunk in response.iter_bytes(8192):
+                            f.write(chunk)
+                    return True
                 else:
                     last_error = Exception(f"HTTP {response.status}")
                     print(f"浏览器请求下载失败 (尝试 {attempt}/{max_retries}): status={response.status}")

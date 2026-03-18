@@ -379,6 +379,10 @@ async def stream_progress(task_id: str):
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
+    # 只读取一次配置，避免每次循环都读取
+    sse_config = config.get_config().sse
+    heartbeat_interval = max(0.5, sse_config.heartbeat_interval)
+
     async def event_generator():
         task = tasks[task_id]
 
@@ -432,14 +436,8 @@ async def stream_progress(task_id: str):
                 task_last_sse_state.pop(task_id, None)
                 break
 
-            # 动态等待：根据 SSE 配置调整等待时间
-            try:
-                sse_config = config.get_config().sse
-                wait_time = max(0.5, sse_config.heartbeat_interval)
-            except Exception:
-                # 配置读取失败，使用默认值
-                wait_time = 2.0
-            await asyncio.sleep(wait_time)
+            # 使用缓存的配置值，避免重复读取
+            await asyncio.sleep(heartbeat_interval)
 
     def get_task_data(task):
         """获取任务数据的 JSON 字符串"""
