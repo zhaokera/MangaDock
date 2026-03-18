@@ -423,6 +423,64 @@ class BaseCrawler(ABC):
         safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
         return safe_name[:max_length]
 
+    async def download_images_batch(
+        self,
+        url_filepairs: List[tuple[str, Path]],
+        max_concurrent: int = 5,
+        progress_callback=None,
+        total=0
+    ) -> int:
+        """
+        批量并行下载图片
+
+        Args:
+            url_filepairs: (url, filepath) 元组列表
+            max_concurrent: 最大并发数
+            progress_callback: 进度回调函数
+            total: 总数（用于进度显示）
+
+        Returns:
+            int: 成功下载的数量
+        """
+        if not url_filepairs:
+            return 0
+
+        success_count = 0
+        semaphore = asyncio.Semaphore(max_concurrent)
+
+        async def download_with_semaphore(url: str, filepath: Path):
+            """带信号量的下载"""
+            async with semaphore:
+                return await self.download_image(url, filepath)
+
+        # 创建所有下载任务
+        tasks = [
+            download_with_semaphore(url, filepath)
+            for url, filepath in url_filepairs
+        ]
+
+        # 执行所有任务
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 统计结果
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                logger.error(f"图片下载异常 {url_filepairs[i][0]}: {result}")
+            elif result:
+                success_count += 1
+
+            # 发送进度回调
+            if progress_callback:
+                current = i + 1
+                progress_callback({
+                    "current": current,
+                    "total": total or len(url_filepairs),
+                    "message": f"下载中 {current}/{total or len(url_filepairs)}",
+                    "success_count": success_count,
+                })
+
+        return success_count
+
     async def login(
         self,
         credentials: Dict[str, str],

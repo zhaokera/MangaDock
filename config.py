@@ -31,6 +31,9 @@ class DownloadConfig:
     output_dir: str = "downloads"
     enable_zip: bool = True
     filename_format: str = "{chapter_name}_{page_number}.jpg"
+    # 下载并发配置
+    max_concurrent_images: int = 5  # 单个下载任务的最大并发图片数
+    enable_chunked_transfer: bool = True  # 是否启用分块传输
 
 
 @dataclass
