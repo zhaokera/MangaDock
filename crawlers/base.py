@@ -315,12 +315,20 @@ class BaseCrawler(ABC):
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
+                # 使用关键字参数传递超时（兼容新版 httpx）
+                timeout = httpx.Timeout(
+                    connect=cfg.network.timeout_connect,
+                    read=cfg.network.timeout_read,
+                    write=cfg.network.timeout_download,
+                    pool=cfg.network.timeout_connect
+                )
+
                 # 使用 context.request 发送请求
                 response = await self.context.request.get(url, headers={
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                     'Referer': referer,
                     'User-Agent': cfg.crawler.user_agent or DEFAULT_USER_AGENT,
-                }, timeout=httpx.Timeout(None, read=cfg.network.timeout_connect))  # 使用配置的超时
+                }, timeout=timeout)
 
                 if response.ok:
                     # 流式写入文件，不缓存到内存

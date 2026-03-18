@@ -21,28 +21,12 @@ from .registry import register_crawler
 import config
 
 
-def decompress_lzstring(encrypted: str) -> str:
-    """
-    解压缩 LZString 加密的字符串
+# ============== 模块级常量 ==============
 
-    漫画柜使用 LZString.decompressFromBase64() 来压缩配置数据
-    这是一个正确的 LZString 解压缩实现
-    """
-    if not encrypted:
-        return ""
-
-    try:
-        # 补齐 base64 padding
-        padding_needed = 4 - len(encrypted) % 4
-        if padding_needed != 4:
-            encrypted += '=' * padding_needed
-
-        # 使用正确的 LZString 解压缩
-        return lzstring_decompress(encrypted)
-    except Exception:
-        pass
-
-    return ""
+# 模块级预编译正则表达式
+_IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
+_LZ_PATTERN = re.compile(r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)')
+_JSON_PATTERN = re.compile(r'"files"\s*:\s*\[(.*?)\]', re.DOTALL)
 
 
 # LZString 解密实现 - 使用正确的算法
@@ -63,19 +47,19 @@ def lzstring_decompress(input_str: str) -> str:
     key_str_url = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_="
 
     # 尝试两种字符集
-    for key_str in [key_str, key_str_url]:
+    for keys in [key_str, key_str_url]:
         try:
             # 反向映射：字符 -> 数值
-            reverse_key = {c: i for i, c in enumerate(key_str)}
+            reverse_key = {c: i for i, c in enumerate(keys)}
 
-            # 将 base64 字符串转换为数值数组
-            nums = []
-            for char in input_str:
-                if char in reverse_key:
-                    nums.append(reverse_key[char])
+            # 使用列表推导替代循环+append，避免重复查找
+            nums = [reverse_key[char] for char in input_str if char in reverse_key]
 
             if not nums:
                 continue
+
+            # 使用 reverse() 替代 pop(0)，将 O(n^2) 复杂度降为 O(n)
+            nums.reverse()
 
             # LZString 解压缩
             dictionary = {i: chr(i) for i in range(256)}
@@ -93,7 +77,7 @@ def lzstring_decompress(input_str: str) -> str:
                 while bits_in_buffer < count:
                     if not nums:
                         return None
-                    bit_buffer |= (nums.pop(0) << bits_in_buffer)
+                    bit_buffer |= (nums.pop() << bits_in_buffer)  # pop() 是 O(1)
                     bits_in_buffer += 6
                 result_val = bit_buffer & ((1 << count) - 1)
                 bit_buffer >>= count
@@ -108,7 +92,7 @@ def lzstring_decompress(input_str: str) -> str:
 
                 # 读取第一个码字
                 first_code = get_bits(num_bits)
-                if first_code is None or first_code is None:
+                if first_code is None:
                     continue
 
                 w = dictionary[first_code]
@@ -150,6 +134,12 @@ def lzstring_decompress(input_str: str) -> str:
     return ""
 
 
+# 模块级预编译正则表达式
+_IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
+_LZ_PATTERN = re.compile(r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)')
+_JSON_PATTERN = re.compile(r'"files"\s*:\s*\[(.*?)\]', re.DOTALL)
+
+
 def extract_images_from_page(page_content: str) -> List[str]:
     """
     从页面内容中提取图片 URL
@@ -161,17 +151,13 @@ def extract_images_from_page(page_content: str) -> List[str]:
     """
     images = []
 
-    # 尝试多种匹配模式
-
-    # 模式1: 直接的图片 URL
-    img_pattern = r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)'
-    direct_images = re.findall(img_pattern, page_content)
+    # 使用预编译的正则表达式
+    direct_images = _IMG_PATTERN.findall(page_content)
     images.extend(direct_images)
 
     # 模式2: 在 script 标签中查找配置
     # 漫画柜通常使用 LZString 加密的配置
-    lz_pattern = r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)'
-    lz_matches = re.findall(lz_pattern, page_content)
+    lz_matches = _LZ_PATTERN.findall(page_content)
 
     for lz_data in lz_matches:
         try:
@@ -179,15 +165,14 @@ def extract_images_from_page(page_content: str) -> List[str]:
             decoded = decompress_lzstring(lz_data)
             if decoded:
                 # 从解密后的数据中提取图片 URL
-                found_images = re.findall(img_pattern, decoded)
+                found_images = _IMG_PATTERN.findall(decoded)
                 images.extend(found_images)
-        except Exception as e:
+        except Exception:
             # 解密失败属于可恢复错误，继续尝试其他模式
             pass
 
     # 模式3: 查找 JSON 配置
-    json_pattern = r'"files"\s*:\s*\[(.*?)\]'
-    json_matches = re.findall(json_pattern, page_content, re.DOTALL)
+    json_matches = _JSON_PATTERN.findall(page_content)
 
     for match in json_matches:
         try:
@@ -196,7 +181,7 @@ def extract_images_from_page(page_content: str) -> List[str]:
             for f in files:
                 if isinstance(f, str) and any(ext in f.lower() for ext in ['.jpg', '.png', '.webp']):
                     images.append(f)
-        except Exception as e:
+        except Exception:
             # JSON 解析失败属于可恢复错误，继续尝试其他模式
             pass
 
@@ -204,8 +189,28 @@ def extract_images_from_page(page_content: str) -> List[str]:
     return list(set(images))
 
 
+# ============== 常量定义 ==============
+
 # 字母数字到数字的映射（用于解码文件名）
-_CHAR_MAP = {c: i for i, c in enumerate('abcdefghijklmnopqrstuvwxyzABCDEF')}
+_FILENAME_MAP = {
+    # 小写字母
+    'a': 0, 'b': 1, 'c': 2, 'd': 3, 'e': 4, 'f': 5, 'g': 6, 'h': 7, 'i': 8, 'j': 9, 'k': 10, 'l': 11,
+    'm': 12, 'n': 13, 'o': 14, 'p': 15, 'q': 16, 'r': 17, 's': 18, 't': 19, 'u': 20, 'v': 21, 'w': 22,
+    'x': 23, 'y': 24, 'z': 25,
+    # 大写字母
+    'A': 0, 'B': 1, 'C': 2, 'D': 3, 'E': 4, 'F': 5, 'G': 6, 'H': 7, 'I': 8, 'J': 9, 'K': 10, 'L': 11,
+    'M': 12, 'N': 13, 'O': 14, 'P': 15, 'Q': 16, 'R': 17, 'S': 18, 'T': 19, 'U': 20, 'V': 21, 'W': 22,
+    'X': 23, 'Y': 24, 'Z': 25,
+}
+
+# 扩展名映射
+_EXT_MAP = {
+    '2.3': '.webp',
+    '1.2': '.jpg',
+    '1.3': '.png',
+    '0.1': '.gif',
+}
+
 
 def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
     """
@@ -223,34 +228,15 @@ def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
     if len(parts) < 2:
         return filename
 
-    # 分析格式: X.Y.Z 或 X.Y
-    # X 是页码编码（字母递减）
-    # Y.Z 是扩展名编码
-
-    # 尝试解码扩展名
-    # 常见映射: 2.3 -> webp, 1.2 -> jpg, 1.3 -> png
-    ext_map = {
-        '2.3': '.webp',
-        '1.2': '.jpg',
-        '1.3': '.png',
-        '0.1': '.gif',
-    }
-
+    # 使用模块级常量
     ext_key = '.'.join(parts[-2:]) if len(parts) >= 3 else parts[-1]
-    ext = ext_map.get(ext_key, '.webp')
+    ext = _EXT_MAP.get(ext_key, '.webp')
 
     # 解码页码
-    # 字母递减: l=11, k=10, j=9, ... 表示页码
-    # 或大写字母: K=20, B=1, A=0, ... 用于Z.X配置
     char = parts[0]
-    # 处理小写字母
-    if char in _CHAR_MAP:
-        page_num = _CHAR_MAP[char]
-        return f"{page_num:03d}{ext}"
-
-    # 处理大写字母 (A=0, B=1, C=2, ...)
-    if char.isupper():
-        page_num = ord(char) - ord('A')
+    # 使用模块级常量 _FILENAME_MAP
+    if char in _FILENAME_MAP:
+        page_num = _FILENAME_MAP[char]
         return f"{page_num:03d}{ext}"
 
     return filename
@@ -1311,7 +1297,7 @@ class ManhuaguiCrawler(BaseCrawler):
             url_hash = hashlib.md5(img_url.encode()).hexdigest()[:8]
             temp_filename = f"{url_hash}{ext}.tmp"
             temp_filepath = save_dir / temp_filename
-            temp_file_mapping[temp_filename] = i  # 记录映射关系
+            temp_file_mapping[temp_filename] = (i, img_url, ext)  # 记录映射关系
             tasks.append(download_with_semaphore(img_url, temp_filepath, page_url, i, total))
 
         # 并发执行所有下载任务
@@ -1319,27 +1305,18 @@ class ManhuaguiCrawler(BaseCrawler):
 
         success_count = sum(results)
 
-        # 按原始序号重命名文件
+        # 按原始序号重命名文件（只重命名成功的）
         print(f"[DEBUG] 正在重命名文件...")
-        for i, img_url in enumerate(image_urls, 1):
-            ext = ".jpg"
-            if ".webp" in img_url.lower():
-                ext = ".webp"
-            elif ".png" in img_url.lower():
-                ext = ".png"
-            elif ".gif" in img_url.lower():
-                ext = ".gif"
-
-            url_hash = hashlib.md5(img_url.encode()).hexdigest()[:8]
-            temp_filename = f"{url_hash}{ext}.tmp"
-            new_filename = f"{i:03d}{ext}"
+        renamed_count = 0
+        for i, (temp_filename, (orig_idx, img_url, ext)) in enumerate(temp_file_mapping.items()):
             temp_path = save_dir / temp_filename
-            new_path = save_dir / new_filename
-
             if temp_path.exists():
+                new_filename = f"{orig_idx:03d}{ext}"
+                new_path = save_dir / new_filename
                 temp_path.rename(new_path)
+                renamed_count += 1
 
-        print(f"[DEBUG] 文件重命名完成")
+        print(f"[DEBUG] 文件重命名完成: {renamed_count}/{len(temp_file_mapping)}")
 
         # 输出下载结果
         print(f"[DEBUG] 并发下载完成: {success_count}/{total} 张图片成功")
