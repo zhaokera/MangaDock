@@ -100,7 +100,8 @@ class BaseCrawler(ABC):
             timeout = httpx.Timeout(
                 cfg.network.timeout_connect,
                 read=cfg.network.timeout_read,
-                timeout=cfg.network.timeout_download
+                connect=cfg.network.timeout_connect,
+                pool=cfg.network.timeout_connect
             )
 
             self.http_client = httpx.AsyncClient(
@@ -185,23 +186,41 @@ class BaseCrawler(ABC):
         cfg = config.get_config()
         browser_args = cfg.crawler.browser_args
 
-        self.playwright = await async_playwright().start()
+        # 先保存到局部变量，成功后再赋值给实例变量
+        playwright = None
+        browser = None
+        context = None
+        page = None
 
         try:
-            self.browser = await self.playwright.chromium.launch(
+            playwright = await async_playwright().start()
+            browser = await playwright.chromium.launch(
                 headless=headless,
                 channel="chrome",
                 args=browser_args
             )
-            self.context = await self.browser.new_context(
+            context = await browser.new_context(
                 viewport={"width": 1920, "height": 1080},
                 user_agent=cfg.crawler.user_agent or DEFAULT_USER_AGENT
             )
-            self.page = await self.context.new_page()
+            page = await context.new_page()
         except Exception:
             # 资源清理：如果后续步骤失败，关闭已创建的资源
-            await self.close_browser()
+            if page:
+                await page.close()
+            if context:
+                await context.close()
+            if browser:
+                await browser.close()
+            if playwright:
+                await playwright.stop()
             raise
+
+        # 成功后赋值给实例变量
+        self.playwright = playwright
+        self.browser = browser
+        self.context = context
+        self.page = page
 
         # 初始化 http 客户端（连接池复用）
         self.http_client = await self.get_http_client()

@@ -27,6 +27,7 @@ import config
 _IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
 _LZ_PATTERN = re.compile(r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)')
 _JSON_PATTERN = re.compile(r'"files"\s*:\s*\[(.*?)\]', re.DOTALL)
+_IMG_SERVER_PATTERN = re.compile(r'https?://[^.]+\.hamreus\.com')
 
 
 # LZString 解密实现 - 使用正确的算法
@@ -272,16 +273,11 @@ def _normalize_image_url(url: str) -> str:
     但这些服务器可能在某些地区无法访问。
     将所有 URL 规范化为第一优选服务器 (i.hamreus.com)
     """
-    if not url:
+    if not url or 'hamreus' not in url:
         return url
 
-    # 将所有 hamreus.com 的 regional 服务器替换为 i.hamreus.com
-    import re
-    return re.sub(
-        r'https?://[^.]+\.hamreus\.com',
-        'https://i.hamreus.com',
-        url
-    )
+    # 使用预编译的正则表达式
+    return _IMG_SERVER_PATTERN.sub('https://i.hamreus.com', url)
 
 
 @register_crawler
@@ -548,16 +544,11 @@ class ManhuaguiCrawler(BaseCrawler):
             await self.page.wait_for_timeout(2000)
 
         finally:
-            # 移除监听器
-            self.page.remove_listener("response", capture_image)
+            # 移除监听器 - 使用 page.off 替代 remove_listener
+            self.page.off("response", capture_image)
 
         # 去重并保持顺序
-        seen = set()
-        unique_urls = []
-        for u in captured_urls:
-            if u not in seen:
-                seen.add(u)
-                unique_urls.append(u)
+        unique_urls = list(dict.fromkeys(captured_urls))
 
         return unique_urls
 
@@ -869,7 +860,8 @@ class ManhuaguiCrawler(BaseCrawler):
 
                     finally:
                         try:
-                            self.page.remove_listener("response", capture_img)
+                            # 使用 page.off 替代 remove_listener
+                            self.page.off("response", capture_img)
                         except Exception:
                             # 移除监听器失败属于可恢复错误
                             pass
@@ -877,24 +869,16 @@ class ManhuaguiCrawler(BaseCrawler):
                     # 处理捕获的 URL
                     print(f"[DEBUG] 开始处理捕获的 URL...")
                     if captured_urls:
-                        # 去重并按页码排序
-                        seen = set()
-                        unique = []
-                        for u in captured_urls:
-                            # 规范化 URL 以使用首选服务器
-                            normalized_url = _normalize_image_url(u)
-                            # 提取文件名中的数字用于排序
-                            if normalized_url not in seen:
-                                seen.add(normalized_url)
-                                unique.append(normalized_url)
+                        # 去重并保持顺序
+                        unique_urls = list(dict.fromkeys(captured_urls))
 
                         # 按文件名排序 (01.jpg, 02.jpg, ...)
                         def get_page_num(url):
                             match = re.search(r'/(\d+)\.(?:jpg|png|webp)', url)
                             return int(match.group(1)) if match else 0
 
-                        unique.sort(key=get_page_num)
-                        image_urls = unique
+                        unique_urls.sort(key=get_page_num)
+                        image_urls = unique_urls
                         total = len(image_urls)
                         print(f"[DEBUG] URL 处理完成，共 {total} 张图片")
                         report(DownloadProgress(message=f"捕获到 {total} 张图片", status="downloading"))
@@ -987,7 +971,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
             # 移除监听器
             try:
-                self.page.remove_listener("response", handle_response)
+                self.page.off("response", handle_response)
             except Exception:
                 # 移除监听器失败属于可恢复错误
                 pass
@@ -1176,19 +1160,13 @@ class ManhuaguiCrawler(BaseCrawler):
             finally:
                 # 移除监听器
                 try:
-                    self.page.remove_listener("response", handle_response)
+                    self.page.off("response", handle_response)
                 except Exception:
                     # 移除监听器失败属于可恢复错误
                     pass
 
-        # 去重但保持顺序
-        seen = set()
-        unique_urls = []
-        for img_u in image_urls:
-            if img_u not in seen:
-                seen.add(img_u)
-                unique_urls.append(img_u)
-        image_urls = unique_urls
+        # 去重但保持顺序（使用 dict.fromkeys 优化）
+        image_urls = list(dict.fromkeys(image_urls))
 
         # 保存原始页面 URL 用于 Referer
         page_url = url

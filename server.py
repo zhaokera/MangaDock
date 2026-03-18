@@ -374,8 +374,8 @@ async def get_status(task_id: str):
 
 
 @app.get("/api/progress/{task_id}")
-async def stream_progress(task_id: str):
-    """SSE 进度推送 - 优化版，仅在重要状态变化时发送"""
+async def stream_progress(task_id: str, timeout: float = 300.0):
+    """SSE 进度推送 - 优化版，仅在重要状态变化时发送，带超时控制"""
     if task_id not in tasks:
         raise HTTPException(status_code=404, detail="任务不存在")
 
@@ -385,6 +385,7 @@ async def stream_progress(task_id: str):
 
     async def event_generator():
         task = tasks[task_id]
+        start_time = time.time()
 
         # 发送初始化状态
         last_state = task_last_sse_state.get(task_id, {})
@@ -416,6 +417,12 @@ async def stream_progress(task_id: str):
         yield f"data: {get_task_data(task)}\n\n"
 
         while True:
+            # 检查超时
+            elapsed = time.time() - start_time
+            if elapsed > timeout:
+                task_last_sse_state.pop(task_id, None)
+                break
+
             # 检查任务状态
             current_state = {
                 "status": task.status,
@@ -438,6 +445,9 @@ async def stream_progress(task_id: str):
 
             # 使用缓存的配置值，避免重复读取
             await asyncio.sleep(heartbeat_interval)
+
+    # 导入 time 模块（如果还没有）
+    import time
 
     def get_task_data(task):
         """获取任务数据的 JSON 字符串"""
@@ -487,11 +497,32 @@ async def download_file(task_id: str):
 
 
 @app.get("/api/history")
-async def get_history():
-    """获取下载历史"""
+async def get_history(page: int = 1, page_size: int = 50):
+    """获取下载历史（支持分页）"""
     history_config = config.get_config().history
     max_items = history_config.max_items if history_config.max_items > 0 else 100
-    return {"history": download_history[-max_items:]}
+
+    # 分页参数验证
+    if page < 1:
+        page = 1
+    if page_size < 1:
+        page_size = 50
+
+    # 限制最大页大小，防止过多数据传输
+    page_size = min(page_size, 200)
+
+    # 计算分页索引
+    history = download_history[-max_items:]  # 限制历史记录总数
+    start = (page - 1) * page_size
+    end = start + page_size
+
+    return {
+        "history": history[start:end],
+        "total": len(history),
+        "page": page,
+        "page_size": page_size,
+        "has_more": end < len(history)
+    }
 
 
 # ============== 启动 ==============
