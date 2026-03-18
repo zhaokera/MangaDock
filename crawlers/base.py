@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, List, Callable, Any, TYPE_CHECKING
+from typing import Optional, List, Callable, Any, Dict, TYPE_CHECKING
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -422,3 +422,39 @@ class BaseCrawler(ABC):
         import re
         safe_name = re.sub(r'[\\/*?:"<>|]', "", name)
         return safe_name[:max_length]
+
+    async def login(
+        self,
+        credentials: Dict[str, str],
+        browser_factory: Optional[Callable] = None
+    ) -> bool:
+        """
+        登录平台（可选方法，子类可覆盖）
+
+        Args:
+            credentials: 登录凭据 (username, password等)
+            browser_factory: 浏览器工厂函数
+
+        Returns:
+            bool: 登录是否成功
+        """
+        # 默认实现：检查必要的凭据
+        if not credentials:
+            return False
+        username = credentials.get('username') or credentials.get('user_id')
+        password = credentials.get('password')
+        if not username or not password:
+            return False
+        # 子类应该覆盖此方法实现具体的登录逻辑
+        logger.warning(f"平台 {self.PLATFORM_NAME} 未实现登录逻辑")
+        return False
+
+    async def logout(self) -> bool:
+        """
+        登出平台（可选方法，子类可覆盖）
+
+        Returns:
+            bool: 登出是否成功
+        """
+        # 默认实现：不做任何操作
+        return True

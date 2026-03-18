@@ -54,6 +54,20 @@ class CrawlerConfig:
     # 浏览器池配置
     browser_idle_timeout: int = 300  # 浏览器空闲超时（秒），默认 5 分钟
     browser_cleanup_interval: int = 60  # 浏览器池清理检查间隔（秒），默认 60 秒
+    # 认证配置
+    auth_enabled: bool = False  # 是否启用认证
+    auth_platforms: list = field(default_factory=list)  # 需要认证的平台列表
+
+
+@dataclass
+class AuthConfig:
+    """认证配置"""
+    # 每个平台的认证配置
+    platforms: dict = field(default_factory=dict)
+    # 会话保存路径
+    session_dir: str = "sessions"
+    # 会话过期时间（秒）
+    session_expiry: int = 86400  # 24 小时
 
 
 @dataclass

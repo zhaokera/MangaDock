@@ -14,7 +14,7 @@ import asyncio
 import time
 import datetime
 import logging
-from typing import Optional, List
+from typing import Optional, List, Dict, Callable
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
@@ -1407,3 +1407,209 @@ class ManhuaguiCrawler(BaseCrawler):
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
             raise
+
+    async def login(
+        self,
+        credentials: Dict[str, str],
+        browser_factory: Optional[Callable] = None
+    ) -> bool:
+        """
+        登录漫画柜平台
+
+        漫画柜的登录逻辑：
+        1. 访问登录页面
+        2. 输入用户名和密码
+        3. 提交表单
+        4. 验证登录结果
+
+        Args:
+            credentials: 登录凭据，包含 username 和 password
+            browser_factory: 浏览器工厂函数（可选）
+
+        Returns:
+            bool: 登录是否成功
+        """
+        username = credentials.get('username')
+        password = credentials.get('password')
+
+        if not username or not password:
+            logger.error("缺少用户名或密码")
+            return False
+
+        await self.start_browser(headless=False)  # 登录时显示浏览器，方便调试
+
+        try:
+            # 访问漫画柜首页
+            await self.page.goto("https://www.manhuagui.com", wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+
+            # 检查是否已经登录
+            is_logged_in = await self.page.evaluate('''
+                () => {
+                    // 检查是否有退出按钮或用户信息
+                    const logoutBtn = document.querySelector('[href*="logout"]') ||
+                                     document.querySelector('.user-logout') ||
+                                     document.querySelector('.logout-link');
+                    return logoutBtn !== null;
+                }
+            ''')
+
+            if is_logged_in:
+                logger.info(" already logged in")
+                return True
+
+            # 尝试找到登录按钮并点击
+            login_btn = await self.page.query_selector(
+                'a[href*="login"], .login-btn, .user-login, .login-link'
+            )
+
+            if login_btn:
+                await login_btn.click()
+                await asyncio.sleep(2)
+                logger.debug("点击登录按钮")
+
+            # 访问登录页面
+            await self.page.goto("https://www.manhuagui.com/login", wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+
+            # 尝试多种选择器查找表单
+            form_loaded = await self.page.evaluate('''
+                () => {
+                    // 检查登录表单是否存在
+                    const loginForm = document.querySelector('#loginform') ||
+                                     document.querySelector('.login-form') ||
+                                     document.querySelector('form[action*="login"]');
+                    return loginForm !== null;
+                }
+            ''')
+
+            if not form_loaded:
+                logger.warning("未找到登录表单，尝试手动填充")
+                return False
+
+            # 填充表单 - 使用多个选择器尝试
+            username_filled = await self.page.evaluate('''
+                () => {
+                    const input = document.querySelector('#username, #account, input[name*="user"], input[name*="account"]');
+                    if (input) {
+                        input.value = arguments[0];
+                        input.dispatchEvent(new Event("input", { bubbles: true }));
+                        return true;
+                    }
+                    return false;
+                }
+            ''', username)
+            logger.debug(f"填充用户名: {username_filled}")
+
+            password_filled = await self.page.evaluate('''
+                () => {
+                    const input = document.querySelector('#password, input[name*="pass"]');
+                    if (input) {
+                        input.value = arguments[0];
+                        input.dispatchEvent(new Event("input", { bubbles: true }));
+                        return true;
+                    }
+                    return false;
+                }
+            ''', password)
+            logger.debug(f"填充密码: {password_filled}")
+
+            # 提交表单
+            submit_success = await self.page.evaluate('''
+                () => {
+                    const form = document.querySelector('#loginform, .login-form, form[action*="login"]');
+                    if (form) {
+                        form.dispatchEvent(new Event("submit", { bubbles: true }));
+                        return true;
+                    }
+                    return false;
+                }
+            ''')
+            logger.debug(f"提交表单: {submit_success}")
+
+            # 等待登录完成
+            await asyncio.sleep(3)
+
+            # 验证登录结果
+            result = await self.page.evaluate('''
+                () => {
+                    // 检查是否登录成功
+                    // 1. 检查是否有退出按钮
+                    const logoutBtn = document.querySelector('[href*="logout"]') ||
+                                     document.querySelector('.user-logout') ||
+                                     document.querySelector('.logout-link');
+                    if (logoutBtn) return true;
+
+                    // 2. 检查是否有用户信息
+                    const userInfo = document.querySelector('.user-info, .username, .nickname');
+                    if (userInfo && userInfo.innerText.trim()) return true;
+
+                    // 3. 检查是否有错误消息
+                    const errorMsg = document.querySelector('.error-msg, .error, .alert-danger');
+                    if (errorMsg) {
+                        console.log('登录错误: ' + errorMsg.innerText);
+                        return false;
+                    }
+
+                    return false;
+                }
+            ''')
+
+            if result:
+                logger.info(f"登录成功: {username}")
+                return True
+            else:
+                # 检查是否有错误消息
+                error_msg = await self.page.evaluate('''
+                    () => {
+                        const el = document.querySelector('.error-msg, .error, .alert-danger');
+                        return el ? el.innerText.trim() : null;
+                    }
+                ''')
+                if error_msg:
+                    logger.error(f"登录失败: {error_msg}")
+                else:
+                    logger.error(f"登录失败: 未知错误")
+                return False
+
+        except Exception as e:
+            logger.error(f"登录异常: {e}", exc_info=True)
+            return False
+        finally:
+            await self.close_browser()
+
+    async def logout(self) -> bool:
+        """
+        登出漫画柜平台
+
+        Returns:
+            bool: 登出是否成功
+        """
+        await self.start_browser(headless=False)
+
+        try:
+            # 访问退出链接
+            await self.page.goto("https://www.manhuagui.com/logout", wait_until="networkidle", timeout=30000)
+            await asyncio.sleep(2)
+
+            # 验证登出结果
+            is_logged_out = await self.page.evaluate('''
+                () => {
+                    // 检查是否还有退出按钮
+                    const logoutBtn = document.querySelector('[href*="logout"]');
+                    return logoutBtn === null;
+                }
+            ''')
+
+            if is_logged_out:
+                logger.info("登出成功")
+                return True
+            else:
+                logger.warning("登出可能失败")
+                return False
+
+        except Exception as e:
+            logger.error(f"登出异常: {e}")
+            return False
+        finally:
+            await self.close_browser()

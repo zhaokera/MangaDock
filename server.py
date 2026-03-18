@@ -51,6 +51,8 @@ from crawlers import (
     update_task_progress,
 )
 from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
+from crawlers.auth import get_auth_manager, AuthManager
+from crawlers.registry import get_crawler_by_platform
 
 # 导入配置管理
 import config
@@ -126,6 +128,11 @@ _state_lock = asyncio.Lock()
 # 浏览器池 - 存储每个爬虫类型的浏览器实例
 _browser_pool: dict[str, dict] = {}
 _browser_pool_lock = asyncio.Lock()
+
+# 下载队列 - 任务优先级队列
+_download_queue: dict[str, DownloadTask] = {}
+_download_queue_priority: dict[str, int] = {}
+_download_queue_lock = asyncio.Lock()
 
 # 初始化数据库
 init_db()
@@ -872,6 +879,183 @@ async def get_history(page: int = 1, page_size: int = 50):
         "page_size": page_size,
         "has_more": end < total
     }
+
+
+@app.post("/api/queue/pause")
+async def pause_download(task_id: str):
+    """暂停下载任务"""
+    async with _download_queue_lock:
+        if task_id in _download_queue:
+            task = _download_queue[task_id]
+            task.status = "paused"
+            return {"status": "paused", "task_id": task_id}
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+
+@app.post("/api/queue/resume")
+async def resume_download(task_id: str):
+    """恢复下载任务"""
+    async with _download_queue_lock:
+        if task_id in _download_queue:
+            task = _download_queue[task_id]
+            task.status = "pending"
+            return {"status": "resumed", "task_id": task_id}
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+
+@app.delete("/api/queue/{task_id}")
+async def remove_from_queue(task_id: str):
+    """从下载队列移除任务"""
+    async with _download_queue_lock:
+        if task_id in _download_queue:
+            del _download_queue[task_id]
+            del _download_queue_priority[task_id]
+            return {"status": "removed", "task_id": task_id}
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+
+@app.get("/api/queue")
+async def get_download_queue():
+    """获取下载队列"""
+    async with _download_queue_lock:
+        queue_items = []
+        for tid, task in _download_queue.items():
+            queue_items.append({
+                "task_id": tid,
+                "url": task.url,
+                "platform": task.platform,
+                "status": task.status,
+                "priority": _download_queue_priority.get(tid, 0),
+                "position": len(queue_items),
+            })
+        # 按优先级排序
+        queue_items.sort(key=lambda x: (-x["priority"], x["position"]))
+        return {"queue": queue_items, "total": len(queue_items)}
+
+
+@app.post("/api/queue/priority")
+async def update_priority(request: dict):
+    """更新任务优先级"""
+    task_id = request.get("task_id")
+    priority = request.get("priority", 0)
+
+    async with _download_queue_lock:
+        if task_id in _download_queue:
+            _download_queue_priority[task_id] = priority
+            return {"status": "updated", "task_id": task_id, "priority": priority}
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+
+# ============== 认证 API ==============
+
+class LoginRequest(BaseModel):
+    platform: str
+    username: str
+    password: str
+    credentials: Optional[dict] = None  # 额外的凭据字段
+
+
+class LoginResponse(BaseModel):
+    status: str
+    platform: str
+    user_id: Optional[str] = None
+    user_name: Optional[str] = None
+    message: Optional[str] = None
+
+
+@app.post("/api/auth/login", response_model=LoginResponse)
+async def login(request: LoginRequest):
+    """登录平台"""
+    platform = request.platform
+    credentials = {
+        'username': request.username,
+        'password': request.password,
+    }
+    # 添加额外凭据
+    if request.credentials:
+        credentials.update(request.credentials)
+
+    # 检查平台是否支持
+    crawler = get_crawler_by_platform(platform)
+    if crawler is None:
+        raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+
+    # 检查平台是否实现了登录
+    if not hasattr(crawler, 'login') or not callable(getattr(crawler, 'login')):
+        raise HTTPException(status_code=400, detail=f"平台 {platform} 不支持登录")
+
+    auth_manager = get_auth_manager()
+    result = await auth_manager.login(platform, credentials)
+
+    if result:
+        user_info = await auth_manager.get_user_info(platform)
+        return LoginResponse(
+            status="success",
+            platform=platform,
+            user_id=user_info.get('user_id') if user_info else None,
+            user_name=user_info.get('user_name') if user_info else None,
+            message="登录成功"
+        )
+    else:
+        raise HTTPException(status_code=401, detail="登录失败")
+
+
+@app.post("/api/auth/logout")
+async def logout(request: dict):
+    """登出平台"""
+    platform = request.get("platform")
+
+    if not platform:
+        raise HTTPException(status_code=400, detail="缺少 platform 参数")
+
+    auth_manager = get_auth_manager()
+    result = await auth_manager.logout(platform)
+
+    if result:
+        return {"status": "success", "platform": platform, "message": "登出成功"}
+    else:
+        raise HTTPException(status_code=500, detail="登出失败")
+
+
+@app.get("/api/auth/status")
+async def auth_status(platform: str):
+    """检查登录状态"""
+    auth_manager = get_auth_manager()
+    is_logged_in = await auth_manager.is_logged_in(platform)
+
+    if is_logged_in:
+        user_info = await auth_manager.get_user_info(platform)
+        return {
+            "status": "logged_in",
+            "platform": platform,
+            "user_id": user_info.get('user_id') if user_info else None,
+            "user_name": user_info.get('user_name') if user_info else None,
+        }
+    else:
+        return {
+            "status": "logged_out",
+            "platform": platform,
+            "user_id": None,
+            "user_name": None,
+        }
+
+
+@app.get("/api/auth/platforms")
+async def auth_platforms():
+    """获取支持认证的平台列表"""
+    platforms = get_supported_platforms()
+    supported = []
+
+    for p in platforms:
+        platform_name = p['name']
+        crawler = get_crawler_by_platform(platform_name)
+        if crawler and hasattr(crawler, 'login') and callable(getattr(crawler, 'login')):
+            supported.append({
+                'name': platform_name,
+                'display_name': p['display_name'],
+            })
+
+    return {"platforms": supported, "total": len(supported)}
 
 
 # ============== 启动 ==============
