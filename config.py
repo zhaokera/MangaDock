@@ -221,22 +221,63 @@ class ConfigManager:
         if os.environ.get('PORT'):
             self.config.port = int(os.environ.get('PORT'))
 
+    def validate(self) -> list[str]:
+        """验证配置值的有效性"""
+        errors = []
+        cfg = self.config
 
-# 全局配置实例
+        # 验证下载并发数
+        if cfg.download.concurrency < 1:
+            errors.append("download.concurrency 必须 >= 1")
+
+        # 验证网络超时
+        if cfg.network.timeout_connect <= 0:
+            errors.append("network.timeout_connect 必须 > 0")
+        if cfg.network.timeout_read <= 0:
+            errors.append("network.timeout_read 必须 > 0")
+        if cfg.network.timeout_download <= 0:
+            errors.append("network.timeout_download 必须 > 0")
+
+        # 验证重试参数
+        if cfg.network.retry_max_attempts < 1:
+            errors.append("network.retry_max_attempts 必须 >= 1")
+        if cfg.network.retry_initial_delay <= 0:
+            errors.append("network.retry_initial_delay 必须 > 0")
+        if cfg.network.retry_max_delay <= 0:
+            errors.append("network.retry_max_delay 必须 > 0")
+        if cfg.network.retry_exponential_base <= 1:
+            errors.append("network.retry_exponential_base 必须 > 1")
+
+        # 验证端口
+        if cfg.port < 1 or cfg.port > 65535:
+            errors.append("server.port 必须在 1-65535 范围内")
+
+        return errors
+
+
+# 全局配置实例（延迟加载）
 _config_manager = ConfigManager()
 _config = None
 
 
 def get_config() -> Config:
-    """获取全局配置实例"""
+    """获取全局配置实例（延迟加载）"""
     global _config
     if _config is None:
         _config = _config_manager.load()
+        # 验证配置
+        errors = _config_manager.validate()
+        if errors:
+            print(f"配置警告: {errors}")
     return _config
 
 
 def reload_config():
-    """重新加载配置"""
+    """重新加载配置（重新验证）"""
     global _config
     _config = _config_manager.load()
+    # 验证配置
+    errors = _config_manager.validate()
+    if errors:
+        print(f"配置警告: {errors}")
     return _config

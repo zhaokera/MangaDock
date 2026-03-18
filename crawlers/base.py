@@ -56,6 +56,9 @@ class DownloadProgress:
 # 进度回调类型
 ProgressCallback = Callable[[DownloadProgress], None]
 
+# 默认 User-Agent
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+
 
 class BaseCrawler(ABC):
     """漫画爬虫基类"""
@@ -80,12 +83,32 @@ class BaseCrawler(ABC):
         避免为每个图片请求创建新的客户端
         """
         import httpx
-        if self.http_client is None or not self.http_client._transport:
+        import config
+        cfg = config.get_config()
+
+        if self.http_client is None or self.http_client.is_closed:
+            # 创建带连接池限制的传输层
+            transport = httpx.AsyncHTTPTransport(
+                limits=httpx.Limits(
+                    max_connections=10,
+                    max_keepalive_connections=5,
+                    keepalive_expiry=30.0
+                )
+            )
+
+            # 构建超时配置
+            timeout = httpx.Timeout(
+                cfg.network.timeout_connect,
+                read=cfg.network.timeout_read,
+                timeout=cfg.network.timeout_download
+            )
+
             self.http_client = httpx.AsyncClient(
-                timeout=60,
+                timeout=timeout,
                 follow_redirects=True,
+                transport=transport,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "User-Agent": cfg.crawler.user_agent or DEFAULT_USER_AGENT,
                     "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
                     "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
                     "Accept-Encoding": "gzip, deflate, br",
@@ -163,27 +186,25 @@ class BaseCrawler(ABC):
         browser_args = cfg.crawler.browser_args
 
         self.playwright = await async_playwright().start()
-        self.browser = await self.playwright.chromium.launch(
-            headless=headless,
-            channel="chrome",
-            args=browser_args
-        )
-        self.context = await self.browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        self.page = await self.context.new_page()
+
+        try:
+            self.browser = await self.playwright.chromium.launch(
+                headless=headless,
+                channel="chrome",
+                args=browser_args
+            )
+            self.context = await self.browser.new_context(
+                viewport={"width": 1920, "height": 1080},
+                user_agent=cfg.crawler.user_agent or DEFAULT_USER_AGENT
+            )
+            self.page = await self.context.new_page()
+        except Exception:
+            # 资源清理：如果后续步骤失败，关闭已创建的资源
+            await self.close_browser()
+            raise
+
         # 初始化 http 客户端（连接池复用）
-        self.http_client = httpx.AsyncClient(
-            timeout=60,
-            follow_redirects=True,
-            headers={
-                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-            }
-        )
+        self.http_client = await self.get_http_client()
 
     async def close_browser(self):
         """关闭浏览器"""
@@ -236,21 +257,33 @@ class BaseCrawler(ABC):
                 if headers:
                     default_headers.update(headers)
 
-                # 指数退避延迟：0.5s, 1s, 2s, 4s, 8s
+                # 指数退避延迟：使用配置的参数
                 if attempt > 1:
-                    delay = 0.5 * (2 ** (attempt - 2))
+                    import config
+                    cfg = config.get_config()
+                    delay = cfg.network.retry_initial_delay * (cfg.network.retry_exponential_base ** (attempt - 2))
+                    delay = min(delay, cfg.network.retry_max_delay)
                     print(f"图片下载等待 {delay:.1f}s 后重试 (尝试 {attempt}/{max_retries})...")
                     await asyncio.sleep(delay)
 
                 # 使用共享的 httpx 客户端（连接池优化）
                 client = await self.get_http_client()
-                response = await client.get(url, headers=default_headers)
-                if response.status_code == 200 and len(response.content) > 0:
-                    filepath.write_bytes(response.content)
-                    return True
-                else:
-                    last_error = Exception(f"HTTP {response.status_code}")
-                    print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
+                async with client.stream("GET", url, headers=default_headers) as response:
+                    if response.status_code == 200:
+                        # 验证内容类型
+                        content_type = response.headers.get("Content-Type", "")
+                        if not content_type.startswith(("image/", "application/octet-stream")):
+                            print(f"警告: 收到非图片内容 {content_type}")
+                            return False
+
+                        # 流式写入文件
+                        with filepath.open('wb') as f:
+                            async for chunk in response.aiter_bytes(8192):
+                                f.write(chunk)
+                        return True
+                    else:
+                        last_error = Exception(f"HTTP {response.status_code}")
+                        print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -275,6 +308,10 @@ class BaseCrawler(ABC):
         if not self.page or not self.context:
             return False
 
+        import config
+        import httpx
+        cfg = config.get_config()
+
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
@@ -282,11 +319,15 @@ class BaseCrawler(ABC):
                 response = await self.context.request.get(url, headers={
                     'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
                     'Referer': referer,
-                    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                }, timeout=120000)  # 120 seconds timeout
+                    'User-Agent': cfg.crawler.user_agent or DEFAULT_USER_AGENT,
+                }, timeout=httpx.Timeout(None, read=cfg.network.timeout_connect))  # 使用配置的超时
 
                 if response.ok:
-                    body = await response.body()
+                    # 流式读取
+                    body = b""
+                    async for chunk in response.iter_bytes(8192):
+                        body += chunk
+
                     if len(body) > 0:
                         filepath.write_bytes(body)
                         return True
@@ -300,9 +341,10 @@ class BaseCrawler(ABC):
                 last_error = e
                 print(f"浏览器下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}")
 
-                # 指数退避延迟
+                # 指数退避延迟：使用配置的参数
                 if attempt < max_retries:
-                    delay = 0.5 * (2 ** (attempt - 1))
+                    delay = cfg.network.retry_initial_delay * (cfg.network.retry_exponential_base ** (attempt - 1))
+                    delay = min(delay, cfg.network.retry_max_delay)
                     print(f"浏览器下载等待 {delay:.1f}s 后重试...")
                     await asyncio.sleep(delay)
 

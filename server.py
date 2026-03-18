@@ -115,12 +115,18 @@ def load_history() -> list[dict]:
 
 
 def save_history(history: list[dict]) -> None:
-    """保存历史记录到文件（调用者需确保线程安全）"""
+    """保存历史记录到文件（同步版本，用于线程池执行）"""
     try:
         HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
         HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
     except Exception as e:
         print(f"保存历史记录失败: {e}")
+
+
+async def save_history_async(history: list[dict]) -> None:
+    """保存历史记录到文件（异步版本，使用线程池）"""
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(None, save_history, history)
 
 
 async def add_history_item(history_item: dict) -> bool:
@@ -134,13 +140,13 @@ async def add_history_item(history_item: dict) -> bool:
         if any(h.get("task_id") == history_item["task_id"] for h in download_history):
             return False
         download_history.append(history_item)
-        save_history(download_history)
+        await save_history_async(download_history)  # 异步保存
 
         # 限制历史记录数量
         history_config = config.get_config().history
         if history_config.max_items and len(download_history) > history_config.max_items:
             download_history[:] = download_history[-history_config.max_items:]
-            save_history(download_history)
+            await save_history_async(download_history)  # 异步保存
         return True
 
 
@@ -244,17 +250,21 @@ class MangaDownloader:
         # 更新漫画信息（合并逻辑）
         self._update_manga_info()
 
-        # 打包 zip
+        # 打包 zip（使用线程池异步执行）
         self.task.message = "正在打包..."
         if output_path and Path(output_path).exists():
             save_dir = Path(output_path)
             zip_name = save_dir.name
             zip_path = DOWNLOADS_DIR / f"{zip_name}.zip"
 
-            with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                for file in sorted(save_dir.iterdir()):
-                    if file.is_file():
-                        zf.write(file, file.name)
+            # 异步打包
+            loop = asyncio.get_event_loop()
+            def zip_folder_sync():
+                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
+                    for file in sorted(save_dir.iterdir()):
+                        if file.is_file():
+                            zf.write(file, file.name)
+            await loop.run_in_executor(None, zip_folder_sync)
 
             self.task.zip_path = str(zip_path)
 
@@ -375,6 +385,7 @@ async def stream_progress(task_id: str):
         # 发送初始化状态
         last_state = task_last_sse_state.get(task_id, {})
 
+        # 检查是否是重要变化（模块级函数，便于测试）
         def is_important_change(current, last) -> bool:
             """判断是否是重要变化（过滤掉 message 的微小变化）"""
             # 状态变化是重要事件
