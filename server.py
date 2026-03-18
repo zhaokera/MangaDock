@@ -35,7 +35,21 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 导入爬虫模块
-from crawlers import get_crawler, get_supported_platforms, BaseCrawler
+from crawlers import (
+    get_crawler,
+    get_supported_platforms,
+    BaseCrawler,
+    init_db,
+    TaskRecord,
+    get_task,
+    save_task,
+    delete_task,
+    get_all_tasks,
+    get_history_tasks,
+    get_total_count,
+    update_task_status,
+    update_task_progress,
+)
 from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 
 # 导入配置管理
@@ -109,12 +123,12 @@ _state_lock = asyncio.Lock()
 _browser_pool: dict[str, dict] = {}
 _browser_pool_lock = asyncio.Lock()
 
+# 初始化数据库
+init_db()
+
 # 下载目录（从配置获取）
 DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
-
-# 历史记录文件
-HISTORY_FILE = DOWNLOADS_DIR / "history.json"
 
 
 async def get_browser_for_platform(platform: str) -> dict:
@@ -254,16 +268,34 @@ async def add_history_item(history_item: dict) -> bool:
         bool: 是否成功添加（False 表示已存在）
     """
     async with _state_lock:
-        if any(h.get("task_id") == history_item["task_id"] for h in download_history):
+        # 检查是否已存在
+        existing = get_task(history_item["task_id"])
+        if existing:
             return False
-        download_history.append(history_item)
-        await save_history_async(download_history)  # 异步保存
 
-        # 限制历史记录数量
+        # 保存到数据库
+        record = TaskRecord(
+            task_id=history_item["task_id"],
+            url=history_item.get("url", ""),
+            platform=history_item["platform"],
+            status="completed",
+            message=history_item.get("message", ""),
+            manga_info=history_item.get("manga_info"),
+            zip_path=history_item.get("zip_path"),
+            created_at=history_item.get("created_at", datetime.now().isoformat()),
+            updated_at=datetime.now().isoformat(),
+        )
+        save_task(record)
+
+        # 限制历史记录数量 - 删除最早的记录
         history_config = config.get_config().history
-        if history_config.max_items and len(download_history) > history_config.max_items:
-            download_history[:] = download_history[-history_config.max_items:]
-            await save_history_async(download_history)  # 异步保存
+        max_items = history_config.max_items if history_config.max_items > 0 else 100
+        total = get_total_count(status="completed")
+        if total > max_items:
+            # 获取需要删除的 task_ids
+            old_tasks = get_history_tasks(limit=total - max_items)
+            for t in old_tasks:
+                delete_task(t.task_id)
         return True
 
 
@@ -273,15 +305,23 @@ def cleanup_old_history():
         history_config = CONFIG.history
         if history_config.auto_cleanup_days > 0:
             cutoff_date = datetime.now() - timedelta(days=history_config.auto_cleanup_days)
-            global download_history
-            download_history = [h for h in download_history if datetime.fromisoformat(h.get('created_at', datetime.now().isoformat())) > cutoff_date]
-            save_history(download_history)
+            # 获取所有历史任务并筛选
+            all_history = get_all_tasks()
+            to_keep = [
+                h for h in all_history
+                if datetime.fromisoformat(h.created_at) > cutoff_date
+            ]
+            # 删除需要清理的任务
+            kept_ids = {h.task_id for h in to_keep}
+            all_ids = {h.task_id for h in all_history}
+            to_delete = all_ids - kept_ids
+            for task_id in to_delete:
+                delete_task(task_id)
     except Exception as e:
         logger.error(f"清理历史记录失败: {e}")
 
 
-# 加载历史记录
-download_history = load_history()
+# 删除旧的历史记录处理（已迁移到数据库）
 
 
 # ============== 下载器 ==============
@@ -292,10 +332,10 @@ class MangaDownloader:
     def __init__(self, task: DownloadTask):
         self.task = task
         self.crawler: Optional[BaseCrawler] = None
+        self.task_record: Optional[TaskRecord] = None
 
     def _cleanup_task(self):
         """清理任务相关的资源"""
-        tasks.pop(self.task.task_id, None)
         task_last_sse_state.pop(self.task.task_id, None)
 
     async def run(self):
@@ -308,17 +348,38 @@ class MangaDownloader:
             # 初始化爬虫的浏览器实例（从池中获取）
             await init_browser_for_crawler(self.crawler, self.task.platform)
 
+            # 创建任务记录并保存到数据库
+            self.task_record = TaskRecord(
+                task_id=self.task.task_id,
+                url=self.task.url,
+                platform=self.task.platform,
+                status="pending",
+                created_at=self.task.created_at.isoformat(),
+                updated_at=datetime.now().isoformat(),
+            )
+            save_task(self.task_record)
+
             await self._do_download()
         except ValueError as e:
             self.task.status = "failed"
             self.task.error = str(e)
             self.task.message = f"错误: {e}"
+            if self.task_record:
+                self.task_record.status = "failed"
+                self.task_record.error = str(e)
+                self.task_record.message = f"错误: {e}"
+                save_task(self.task_record)
         except Exception as e:
             self.task.status = "failed"
             self.task.error = str(e)
             self.task.message = f"下载失败: {e}"
             import traceback
             traceback.print_exc()
+            if self.task_record:
+                self.task_record.status = "failed"
+                self.task_record.error = str(e)
+                self.task_record.message = f"下载失败: {e}"
+                save_task(self.task_record)
         finally:
             # 任务完成或失败后清理浏览器引用
             if self.crawler:
@@ -329,6 +390,8 @@ class MangaDownloader:
                 self.crawler.playwright = None
             # 任务完成或失败后清理 tasks 字典和 SSE 状态
             self._cleanup_task()
+            # 保存任务到数据库
+            save_task(self.task_record)
 
     def _update_manga_info(self):
         """更新漫画信息（合并重复逻辑）"""
@@ -336,10 +399,14 @@ class MangaDownloader:
             info = self.crawler.manga_info
             if info:
                 self.task.manga_info = info.to_dict()
+                if self.task_record:
+                    self.task_record.manga_info = info.to_dict()
         elif self.crawler and hasattr(self.crawler, '_manga_info'):
             info = self.crawler._manga_info
             if info:
                 self.task.manga_info = info.to_dict()
+                if self.task_record:
+                    self.task_record.manga_info = info.to_dict()
 
     async def _do_download(self):
         """执行下载"""
@@ -347,15 +414,24 @@ class MangaDownloader:
 
         self.task.message = "解析漫画信息..."
         self.task.status = "downloading"
+        if self.task_record:
+            self.task_record.status = "downloading"
+            self.task_record.message = "解析漫画信息..."
+            save_task(self.task_record)
 
         # 获取漫画信息
         try:
             info = await self.crawler.get_info(url)
             self.task.manga_info = info.to_dict()
             self.task.platform = info.platform
+            if self.task_record:
+                self.task_record.manga_info = info.to_dict()
+                self.task_record.platform = info.platform
+                save_task(self.task_record)
         except Exception as e:
             # 如果获取信息失败，继续尝试下载
-            pass
+            if self.task_record:
+                save_task(self.task_record)
 
         # 定义进度回调
         def on_progress(progress: DownloadProgress):
@@ -364,6 +440,12 @@ class MangaDownloader:
             self.task.message = progress.message
             if progress.status:
                 self.task.status = progress.status
+            if self.task_record:
+                self.task_record.status = progress.status
+                self.task_record.progress = progress.current
+                self.task_record.total = progress.total
+                self.task_record.message = progress.message
+                save_task(self.task_record)
 
         # 执行下载
         output_path = await self.crawler.download(
@@ -373,12 +455,17 @@ class MangaDownloader:
         )
 
         self.task.output_path = output_path
+        if self.task_record:
+            self.task_record.output_path = output_path
 
         # 更新漫画信息（合并逻辑）
         self._update_manga_info()
 
         # 打包 zip（使用线程池异步执行）
         self.task.message = "正在打包..."
+        if self.task_record:
+            self.task_record.message = "正在打包..."
+            save_task(self.task_record)
         if output_path and Path(output_path).exists():
             save_dir = Path(output_path)
             zip_name = save_dir.name
@@ -394,9 +481,15 @@ class MangaDownloader:
             await loop.run_in_executor(None, zip_folder_sync)
 
             self.task.zip_path = str(zip_path)
+            if self.task_record:
+                self.task_record.zip_path = str(zip_path)
 
         self.task.status = "completed"
         self.task.message = f"下载完成! 共 {self.task.total} 张图片"
+        if self.task_record:
+            self.task_record.status = "completed"
+            self.task_record.message = f"下载完成! 共 {self.task.total} 张图片"
+            save_task(self.task_record)
 
         # 添加到历史（使用线程安全的方法）
         if self.task.manga_info:
@@ -466,7 +559,6 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
     # 创建任务
     task_id = str(uuid.uuid4())[:8]
     task = DownloadTask(task_id, url, platform=crawler.PLATFORM_NAME)
-    tasks[task_id] = task
 
     # 后台执行下载
     downloader = MangaDownloader(task)
@@ -482,28 +574,32 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
 
 @app.get("/api/status/{task_id}")
 async def get_status(task_id: str):
-    """获取任务状态"""
-    if task_id not in tasks:
+    """获取任务状态（从数据库）"""
+    # 首先检查内存中的任务（正在进行中）
+    task_record = get_task(task_id)
+    if not task_record:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    task = tasks[task_id]
     return {
-        "task_id": task.task_id,
-        "status": task.status,
-        "progress": task.progress,
-        "total": task.total,
-        "message": task.message,
-        "platform": task.platform,
-        "manga_info": task.manga_info,
-        "zip_path": task.zip_path,
-        "error": task.error
+        "task_id": task_record.task_id,
+        "status": task_record.status,
+        "progress": task_record.progress,
+        "total": task_record.total,
+        "message": task_record.message,
+        "platform": task_record.platform,
+        "manga_info": task_record.manga_info,
+        "zip_path": task_record.zip_path,
+        "output_path": task_record.output_path,
+        "error": task_record.error
     }
 
 
 @app.get("/api/progress/{task_id}")
 async def stream_progress(task_id: str, timeout: float = 300.0):
     """SSE 进度推送 - 优化版，仅在重要状态变化时发送，带超时控制"""
-    if task_id not in tasks:
+    # 检查任务是否存在（从数据库或内存中）
+    task_record = get_task(task_id)
+    if not task_record:
         raise HTTPException(status_code=404, detail="任务不存在")
 
     # 只读取一次配置，避免每次循环都读取
@@ -513,7 +609,6 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
     import time
 
     async def event_generator():
-        task = tasks[task_id]
         start_time = time.time()
 
         # 发送初始化状态
@@ -543,7 +638,7 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
             return False
 
         # 立即发送当前状态
-        yield f"data: {get_task_data(task)}\n\n"
+        yield f"data: {get_task_data(task_record)}\n\n"
 
         while True:
             # 检查超时
@@ -552,41 +647,46 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
                 task_last_sse_state.pop(task_id, None)
                 break
 
-            # 检查任务状态
+            # 获取最新任务状态（从数据库）
+            current_record = get_task(task_id)
+            if not current_record:
+                task_last_sse_state.pop(task_id, None)
+                break
+
             current_state = {
-                "status": task.status,
-                "progress": task.progress,
-                "total": task.total,
-                "message": task.message,
-                "error": task.error,
+                "status": current_record.status,
+                "progress": current_record.progress,
+                "total": current_record.total,
+                "message": current_record.message,
+                "error": current_record.error,
             }
 
             # 只有重要状态变化时才发送
             if is_important_change(current_state, last_state):
-                yield f"data: {get_task_data(task)}\n\n"
+                yield f"data: {get_task_data(current_record)}\n\n"
                 last_state = current_state.copy()
                 task_last_sse_state[task_id] = last_state
 
             # 任务完成或失败，结束连接
-            if task.status in ("completed", "failed"):
+            if current_record.status in ("completed", "failed"):
                 task_last_sse_state.pop(task_id, None)
                 break
 
             # 使用缓存的配置值，避免重复读取
             await asyncio.sleep(heartbeat_interval)
 
-    def get_task_data(task):
+    def get_task_data(record: TaskRecord):
         """获取任务数据的 JSON 字符串"""
         data = {
-            "task_id": task.task_id,
-            "status": task.status,
-            "progress": task.progress,
-            "total": task.total,
-            "message": task.message,
-            "platform": task.platform,
-            "manga_info": task.manga_info,
-            "zip_path": task.zip_path,
-            "error": task.error
+            "task_id": record.task_id,
+            "status": record.status,
+            "progress": record.progress,
+            "total": record.total,
+            "message": record.message,
+            "platform": record.platform,
+            "manga_info": record.manga_info,
+            "zip_path": record.zip_path,
+            "error": record.error
         }
         return json.dumps(data, ensure_ascii=False) + "\n\n"
 
@@ -603,20 +703,19 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
 @app.get("/api/files/{task_id}")
 async def download_file(task_id: str):
     """下载打包文件"""
-    if task_id not in tasks:
+    task_record = get_task(task_id)
+    if not task_record:
         raise HTTPException(status_code=404, detail="任务不存在")
 
-    task = tasks[task_id]
-
-    if task.status != "completed":
+    if task_record.status != "completed":
         raise HTTPException(status_code=400, detail="任务尚未完成")
 
-    if not task.zip_path or not Path(task.zip_path).exists():
+    if not task_record.zip_path or not Path(task_record.zip_path).exists():
         raise HTTPException(status_code=404, detail="文件不存在")
 
-    filename = Path(task.zip_path).name
+    filename = Path(task_record.zip_path).name
     return FileResponse(
-        task.zip_path,
+        task_record.zip_path,
         media_type="application/zip",
         filename=filename
     )
@@ -624,7 +723,7 @@ async def download_file(task_id: str):
 
 @app.get("/api/history")
 async def get_history(page: int = 1, page_size: int = 50):
-    """获取下载历史（支持分页）"""
+    """获取下载历史（支持分页，从数据库）"""
     history_config = config.get_config().history
     max_items = history_config.max_items if history_config.max_items > 0 else 100
 
@@ -637,17 +736,21 @@ async def get_history(page: int = 1, page_size: int = 50):
     # 限制最大页大小，防止过多数据传输
     page_size = min(page_size, 200)
 
+    # 从数据库获取历史任务
+    all_history = get_history_tasks(limit=max_items)
+    total = len(all_history)
+
     # 计算分页索引
-    history = download_history[-max_items:]  # 限制历史记录总数
     start = (page - 1) * page_size
     end = start + page_size
+    page_tasks = all_history[start:end]
 
     return {
-        "history": history[start:end],
-        "total": len(history),
+        "history": [t.to_dict() for t in page_tasks],
+        "total": total,
         "page": page,
         "page_size": page_size,
-        "has_more": end < len(history)
+        "has_more": end < total
     }
 
 
