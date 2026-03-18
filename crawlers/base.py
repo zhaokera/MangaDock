@@ -67,6 +67,22 @@ ProgressCallback = Callable[[DownloadProgress], None]
 # 默认 User-Agent
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
+# 默认图片下载请求头（可被外部请求头覆盖）
+DEFAULT_IMAGE_HEADERS = {
+    "User-Agent": DEFAULT_USER_AGENT,
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
+    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"macOS"',
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "cross-site",
+}
+
 
 class BaseCrawler(ABC):
     """漫画爬虫基类"""
@@ -270,20 +286,7 @@ class BaseCrawler(ABC):
         for attempt in range(1, max_retries + 1):
             try:
                 # 浏览器级别的请求头
-                default_headers = {
-                    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-                    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-                    "Accept-Encoding": "gzip, deflate, br",
-                    "Cache-Control": "no-cache",
-                    "Pragma": "no-cache",
-                    "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-                    "Sec-Ch-Ua-Mobile": "?0",
-                    "Sec-Ch-Ua-Platform": '"macOS"',
-                    "Sec-Fetch-Dest": "image",
-                    "Sec-Fetch-Mode": "no-cors",
-                    "Sec-Fetch-Site": "cross-site",
-                }
+                default_headers = DEFAULT_IMAGE_HEADERS.copy()
                 if headers:
                     default_headers.update(headers)
 
@@ -352,11 +355,9 @@ class BaseCrawler(ABC):
                 )
 
                 # 使用 context.request 发送请求
-                response = await self.context.request.get(url, headers={
-                    'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-                    'Referer': referer,
-                    'User-Agent': cfg.crawler.user_agent or DEFAULT_USER_AGENT,
-                }, timeout=timeout)
+                browser_headers = DEFAULT_IMAGE_HEADERS.copy()
+                browser_headers['Referer'] = referer
+                response = await self.context.request.get(url, headers=browser_headers, timeout=timeout)
 
                 if response.ok:
                     # 流式写入文件，不缓存到内存
