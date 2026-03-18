@@ -81,6 +81,33 @@ export async function startDownload(url: string): Promise<{ task_id: string; pla
   return response.json();
 }
 
+// 批量下载
+export async function startBatchDownload(urls: string[]): Promise<{
+  total: number;
+  success: number;
+  failed: number;
+  results: Array<{
+    url: string;
+    task_id?: string;
+    status: 'pending' | 'failed';
+    platform?: string;
+    error?: string;
+  }>;
+}> {
+  const response = await fetch(`${API_BASE}/batch-download`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls })
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '批量下载失败');
+  }
+
+  return response.json();
+}
+
 // 获取任务状态
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
   const response = await fetch(`${API_BASE}/status/${taskId}`);

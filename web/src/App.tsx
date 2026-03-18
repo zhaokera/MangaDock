@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import UrlInput from './components/UrlInput';
 import DownloadProgress from './components/DownloadProgress';
 import History from './components/History';
-import { startDownload, subscribeProgress, TaskStatus, getPlatforms, Platform } from './api/client';
+import { startDownload, subscribeProgress, TaskStatus, getPlatforms, Platform, startBatchDownload } from './api/client';
 
 // 平台颜色配置
 const PLATFORM_COLORS: Record<string, { primary: string; secondary: string; bg: string }> = {
@@ -49,6 +49,45 @@ const App: React.FC = () => {
         unsubscribeRef.current();
       }
     };
+  }, []);
+
+  const handleBatchDownload = useCallback(async (urls: string[]) => {
+    try {
+      setDownloading(true);
+
+      const result = await startBatchDownload(urls);
+
+      console.log('批量下载结果:', result);
+
+      // 显示结果摘要
+      if (result.success > 0) {
+        alert(`成功创建 ${result.success} 个下载任务！\n失败: ${result.failed} 个`);
+      } else {
+        alert('所有任务创建失败，请检查 URL 是否正确');
+      }
+
+      setDownloading(false);
+
+      // 如果有成功创建的任务，可以显示第一个任务的状态
+      const successfulTask = result.results.find(r => r.task_id);
+      if (successfulTask) {
+        const unsubscribe = subscribeProgress(
+          successfulTask.task_id!,
+          (status) => {
+            setCurrentTask(status);
+            if (status.status === 'completed' || status.status === 'failed') {
+              setDownloading(false);
+            }
+          }
+        );
+        unsubscribeRef.current = unsubscribe;
+      }
+
+    } catch (error) {
+      console.error('批量下载失败', error);
+      setDownloading(false);
+      alert(error instanceof Error ? error.message : '批量下载失败');
+    }
   }, []);
 
   const handleDownload = useCallback(async (url: string) => {
@@ -159,7 +198,7 @@ const App: React.FC = () => {
             </div>
             <h2 className="font-bold text-gray-800">输入链接</h2>
           </div>
-          <UrlInput onDownload={handleDownload} disabled={downloading} platforms={platforms} />
+          <UrlInput onDownload={handleDownload} onBatchDownload={handleBatchDownload} disabled={downloading} platforms={platforms} />
         </section>
 
         {/* Download Progress */}

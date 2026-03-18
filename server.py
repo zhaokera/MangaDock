@@ -14,11 +14,11 @@ import uuid
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from dataclasses import dataclass, field, asdict
 
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks
+    from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, StreamingResponse
     from pydantic import BaseModel
@@ -63,6 +63,10 @@ CONFIG = config.get_config()
 
 class DownloadRequest(BaseModel):
     url: str
+
+
+class BatchDownloadRequest(BaseModel):
+    urls: List[str]
 
 
 class PlatformInfo(BaseModel):
@@ -569,6 +573,67 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
         "status": "pending",
         "platform": crawler.PLATFORM_NAME,
         "message": "任务已创建"
+    }
+
+
+@app.post("/api/batch-download")
+async def start_batch_download(request: BatchDownloadRequest, background_tasks: BackgroundTasks):
+    """批量下载 - 一次下载多个漫画"""
+    urls = request.urls
+
+    if not urls or len(urls) == 0:
+        raise HTTPException(status_code=400, detail="至少需要提供一个 URL")
+
+    if len(urls) > 20:
+        raise HTTPException(status_code=400, detail="单次最多支持 20 个 URL")
+
+    # 验证所有 URL 并获取爬虫
+    tasks_info = []
+    for url in urls:
+        try:
+            crawler = get_crawler(url)
+            tasks_info.append({
+                "url": url,
+                "platform": crawler.PLATFORM_NAME,
+                "crawler": crawler
+            })
+        except ValueError as e:
+            # 记录失败但继续处理其他 URL
+            tasks_info.append({
+                "url": url,
+                "error": str(e),
+                "platform": None
+            })
+
+    # 创建任务并启动下载
+    results = []
+    for info in tasks_info:
+        if info.get("error"):
+            results.append({
+                "url": info["url"],
+                "status": "failed",
+                "error": info["error"]
+            })
+            continue
+
+        task_id = str(uuid.uuid4())[:8]
+        task = DownloadTask(task_id, info["url"], platform=info["platform"])
+
+        downloader = MangaDownloader(task)
+        background_tasks.add_task(downloader.run)
+
+        results.append({
+            "url": info["url"],
+            "task_id": task_id,
+            "status": "pending",
+            "platform": info["platform"]
+        })
+
+    return {
+        "total": len(results),
+        "success": sum(1 for r in results if r.get("status") == "pending"),
+        "failed": sum(1 for r in results if r.get("status") == "failed"),
+        "results": results
     }
 
 
