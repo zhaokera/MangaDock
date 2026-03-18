@@ -292,7 +292,7 @@ class BaseCrawler(ABC):
                         # 验证内容类型
                         content_type = response.headers.get("Content-Type", "")
                         if not content_type.startswith(("image/", "application/octet-stream")):
-                            print(f"警告: 收到非图片内容 {content_type}")
+                            print(f"警告: 收到非图片内容 {content_type} (URL: {url[:60]}...)")
                             return False
 
                         # 流式写入文件
@@ -302,13 +302,13 @@ class BaseCrawler(ABC):
                         return True
                     else:
                         last_error = Exception(f"HTTP {response.status_code}")
-                        print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}")
+                        print(f"图片下载失败 (尝试 {attempt}/{max_retries}): HTTP {response.status_code}, URL: {url[:60]}...")
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 last_error = e
-                print(f"图片下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}")
-        print(f"图片下载最终失败: {last_error}")
+                print(f"图片下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}, URL: {url[:60]}...")
+        print(f"图片下载最终失败: {last_error}, URL: {url[:60]}...")
         return False
 
     async def download_image_via_browser(self, url: str, filepath: Path, referer: str = "", max_retries: int = 5) -> bool:
@@ -357,13 +357,13 @@ class BaseCrawler(ABC):
                     return True
                 else:
                     last_error = Exception(f"HTTP {response.status}")
-                    print(f"浏览器请求下载失败 (尝试 {attempt}/{max_retries}): status={response.status}")
+                    print(f"浏览器请求下载失败 (尝试 {attempt}/{max_retries}): status={response.status}, URL: {url[:60]}...")
 
             except asyncio.CancelledError:
                 raise
             except Exception as e:
                 last_error = e
-                print(f"浏览器下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}")
+                print(f"浏览器下载异常 (尝试 {attempt}/{max_retries}): {type(e).__name__}, URL: {url[:60]}...")
 
                 # 指数退避延迟：使用配置的参数
                 if attempt < max_retries:
@@ -372,7 +372,7 @@ class BaseCrawler(ABC):
                     print(f"浏览器下载等待 {delay:.1f}s 后重试...")
                     await asyncio.sleep(delay)
 
-        print(f"浏览器下载最终失败: {last_error}")
+        print(f"浏览器下载最终失败: {last_error}, URL: {url[:60]}...")
         return False
 
     def sanitize_filename(self, name: str, max_length: int = 80) -> str:

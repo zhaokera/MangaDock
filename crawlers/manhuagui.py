@@ -896,13 +896,9 @@ class ManhuaguiCrawler(BaseCrawler):
                         ''')
 
                         if loaded_images:
-                            # 去重并规范化 URL
-                            seen = set()
-                            for u in loaded_images:
-                                normalized_url = _normalize_image_url(u)
-                                if normalized_url not in seen:
-                                    seen.add(normalized_url)
-                                    image_urls.append(normalized_url)
+                            # 去重并规范化 URL（使用 dict.fromkeys 优化）
+                            normalized_urls = [_normalize_image_url(u) for u in loaded_images]
+                            image_urls = list(dict.fromkeys(normalized_urls))
                             total = len(image_urls)
                         else:
                             # 最后尝试手动构造 URL

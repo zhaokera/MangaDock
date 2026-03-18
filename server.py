@@ -383,6 +383,8 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
     sse_config = config.get_config().sse
     heartbeat_interval = max(0.5, sse_config.heartbeat_interval)
 
+    import time
+
     async def event_generator():
         task = tasks[task_id]
         start_time = time.time()
@@ -445,9 +447,6 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
 
             # 使用缓存的配置值，避免重复读取
             await asyncio.sleep(heartbeat_interval)
-
-    # 导入 time 模块（如果还没有）
-    import time
 
     def get_task_data(task):
         """获取任务数据的 JSON 字符串"""
