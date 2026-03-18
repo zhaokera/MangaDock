@@ -51,6 +51,9 @@ class CrawlerConfig:
         "--disable-gpu",
         "--set-bundle-mapping=chromium,chrome",
     ])
+    # 浏览器池配置
+    browser_idle_timeout: int = 300  # 浏览器空闲超时（秒），默认 5 分钟
+    browser_cleanup_interval: int = 60  # 浏览器池清理检查间隔（秒），默认 60 秒
 
 
 @dataclass

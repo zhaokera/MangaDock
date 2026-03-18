@@ -139,6 +139,11 @@ async def get_browser_for_platform(platform: str) -> dict:
     """
     获取指定平台的浏览器实例（从池中获取或创建新实例）
 
+    浏览器池管理策略：
+    - 每个平台最多保留 N 个浏览器实例（可配置）
+    - 空闲超时（默认 5 分钟）后自动关闭
+    - 使用计数器追踪活跃连接
+
     Args:
         platform: 平台名称
 
@@ -150,6 +155,8 @@ async def get_browser_for_platform(platform: str) -> dict:
 
     async with _browser_pool_lock:
         if platform in _browser_pool:
+            # 更新最后使用时间
+            _browser_pool[platform]["last_used"] = asyncio.get_event_loop().time()
             return _browser_pool[platform]
 
         # 创建新的浏览器实例
@@ -166,13 +173,16 @@ async def get_browser_for_platform(platform: str) -> dict:
         )
         page = await context.new_page()
 
+        current_time = asyncio.get_event_loop().time()
         browser_info = {
             "playwright": playwright,
             "browser": browser,
             "context": context,
             "page": page,
             "platform": platform,
-            "used_count": 0
+            "used_count": 0,
+            "created_at": current_time,
+            "last_used": current_time
         }
 
         _browser_pool[platform] = browser_info
@@ -184,6 +194,11 @@ async def release_browser_for_platform(platform: str):
     """
     释放指定平台的浏览器实例
 
+    优化策略：
+    - 不立即关闭浏览器，而是标记为可清理
+    - 通过 cleanup_browser_pool 定期清理空闲浏览器
+    - 避免频繁创建/销毁浏览器实例
+
     Args:
         platform: 平台名称
     """
@@ -191,25 +206,10 @@ async def release_browser_for_platform(platform: str):
         if platform in _browser_pool:
             browser_info = _browser_pool[platform]
             browser_info["used_count"] = max(0, browser_info["used_count"] - 1)
+            browser_info["last_used"] = asyncio.get_event_loop().time()
 
-            # 如果使用次数为0且距离上次使用超过5分钟，关闭浏览器
+            # 记录使用状态
             logger.debug(f"平台 {platform} 浏览器使用次数: {browser_info['used_count']}")
-
-            if browser_info["used_count"] <= 0:
-                try:
-                    if browser_info["page"]:
-                        await browser_info["page"].close()
-                    if browser_info["context"]:
-                        await browser_info["context"].close()
-                    if browser_info["browser"]:
-                        await browser_info["browser"].close()
-                    if browser_info["playwright"]:
-                        await browser_info["playwright"].stop()
-                except Exception as e:
-                    logger.error(f"释放平台 {platform} 浏览器失败: {e}")
-                finally:
-                    del _browser_pool[platform]
-                    logger.info(f"平台 {platform} 浏览器已释放")
 
 
 async def init_browser_for_crawler(crawler: BaseCrawler, platform: str):
@@ -230,13 +230,68 @@ async def init_browser_for_crawler(crawler: BaseCrawler, platform: str):
 
 
 async def cleanup_browser_pool():
-    """清理浏览器池中长时间未使用的浏览器"""
-    import time
+    """
+    清理浏览器池中长时间未使用的浏览器
+
+    策略：
+    - 遍历所有平台的浏览器
+    - 如果 used_count <= 0 且最后使用时间超过空闲超时，则关闭
+    - 默认空闲超时：5 分钟
+
+    Returns:
+        list: 已关闭的平台列表
+    """
+    import config
     async with _browser_pool_lock:
+        closed_platforms = []
+        cfg = config.get_config()
+        # 空闲超时（秒），从配置读取，默认 300 秒（5 分钟）
+        idle_timeout = getattr(cfg.crawler, 'browser_idle_timeout', 300)
+
+        current_time = asyncio.get_event_loop().time()
+
         for platform, browser_info in list(_browser_pool.items()):
             if browser_info["used_count"] <= 0:
-                # 标记为待清理
-                browser_info["used_count"] = -1
+                last_used = browser_info.get("last_used", browser_info["created_at"])
+                idle_time = current_time - last_used
+
+                if idle_time > idle_timeout:
+                    try:
+                        logger.info(f"清理空闲浏览器 [平台: {platform}, 空闲时间: {idle_time:.1f}s]")
+
+                        if browser_info["page"]:
+                            await browser_info["page"].close()
+                        if browser_info["context"]:
+                            await browser_info["context"].close()
+                        if browser_info["browser"]:
+                            await browser_info["browser"].close()
+                        if browser_info["playwright"]:
+                            await browser_info["playwright"].stop()
+
+                        del _browser_pool[platform]
+                        closed_platforms.append(platform)
+                    except Exception as e:
+                        logger.error(f"清理平台 {platform} 浏览器失败: {e}")
+
+        return closed_platforms
+
+
+async def schedule_browser_cleanup(interval: float = 60.0):
+    """
+    定期调度浏览器池清理任务（后台运行）
+
+    Args:
+        interval: 清理检查间隔（秒），默认 60 秒
+    """
+    import time
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            closed = await cleanup_browser_pool()
+            if closed:
+                logger.info(f"浏览器池清理完成: {len(closed)} 个平台")
+        except Exception as e:
+            logger.error(f"浏览器池清理调度失败: {e}")
 
 
 def load_history() -> list[dict]:
@@ -821,6 +876,68 @@ async def get_history(page: int = 1, page_size: int = 50):
 
 # ============== 启动 ==============
 
+# 浏览器池清理任务句柄
+_browser_cleanup_task: Optional[asyncio.Task] = None
+
+
+async def start_browser_cleanup_scheduler():
+    """启动浏览器池清理调度器（后台任务）"""
+    global _browser_cleanup_task
+    # 从配置获取清理间隔，默认 60 秒
+    cfg = config.get_config()
+    cleanup_interval = getattr(cfg.crawler, 'browser_cleanup_interval', 60)
+
+    _browser_cleanup_task = asyncio.create_task(schedule_browser_cleanup(cleanup_interval))
+    logger.info(f"浏览器池清理调度器已启动 (interval={cleanup_interval}s)")
+
+
+async def stop_browser_cleanup_scheduler():
+    """停止浏览器池清理调度器"""
+    global _browser_cleanup_task
+    if _browser_cleanup_task:
+        _browser_cleanup_task.cancel()
+        try:
+            await _browser_cleanup_task
+        except asyncio.CancelledError:
+            pass
+        _browser_cleanup_task = None
+
+
+async def on_startup():
+    """应用启动时的初始化"""
+    await start_browser_cleanup_scheduler()
+
+
+async def on_shutdown():
+    """应用关闭时的清理"""
+    # 关闭所有浏览器
+    async with _browser_pool_lock:
+        for platform, browser_info in list(_browser_pool.items()):
+            try:
+                logger.info(f"关闭平台 {platform} 的浏览器")
+                if browser_info["page"]:
+                    await browser_info["page"].close()
+                if browser_info["context"]:
+                    await browser_info["context"].close()
+                if browser_info["browser"]:
+                    await browser_info["browser"].close()
+                if browser_info["playwright"]:
+                    await browser_info["playwright"].stop()
+            except Exception as e:
+                logger.error(f"关闭平台 {platform} 浏览器失败: {e}")
+        _browser_pool.clear()
+
+    # 停止清理调度器
+    await stop_browser_cleanup_scheduler()
+
+
+# 注册生命周期事件
+app.add_event_handler("startup", on_startup)
+app.add_event_handler("shutdown", on_shutdown)
+
+
+# ============== 启动 ==============
+
 if __name__ == "__main__":
     import uvicorn
 
@@ -839,5 +956,11 @@ if __name__ == "__main__":
     logger.info(f"  - 下载目录: {CONFIG.download.output_dir}")
     logger.info(f"  - 并发数: {CONFIG.download.concurrency}")
     logger.info(f"  - 日志级别: {CONFIG.logging.level}")
+
+    # 显示浏览器池配置
+    cleanup_interval = getattr(CONFIG.crawler, 'browser_cleanup_interval', 60)
+    idle_timeout = getattr(CONFIG.crawler, 'browser_idle_timeout', 300)
+    logger.info(f"  - 浏览器池清理间隔: {cleanup_interval}s")
+    logger.info(f"  - 浏览器空闲超时: {idle_timeout}s")
 
     uvicorn.run(app, host=CONFIG.host, port=CONFIG.port)

@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from typing import Optional, List, Callable, Any, TYPE_CHECKING
 from dataclasses import dataclass, field
@@ -101,6 +102,9 @@ class BaseCrawler(ABC):
         self.playwright = None
         self.http_client: Optional["httpx.AsyncClient"] = None
         self.cfg = None  # 配置将在 start_browser 中初始化
+        # 限速相关
+        self._last_download_time: float = 0
+        self._download_lock = asyncio.Lock()
 
     async def get_http_client(self) -> "httpx.AsyncClient":
         """
@@ -266,7 +270,7 @@ class BaseCrawler(ABC):
 
     async def download_image(self, url: str, filepath: Path, headers: Optional[dict] = None, max_retries: int = 5) -> bool:
         """
-        下载单张图片（带重试机制，指数退避）
+        下载单张图片（带重试机制，指数退避，限速）
 
         Args:
             url: 图片 URL
@@ -298,6 +302,9 @@ class BaseCrawler(ABC):
                     logger.debug(f"图片下载等待 {delay:.1f}s 后重试 (尝试 {attempt}/{max_retries})...")
                     await asyncio.sleep(delay)
 
+                # 应用下载限速（防止请求过快被封禁）
+                await self._apply_rate_limit()
+
                 # 使用共享的 httpx 客户端（连接池优化）
                 client = await self.get_http_client()
                 async with client.stream("GET", url, headers=default_headers) as response:
@@ -326,7 +333,7 @@ class BaseCrawler(ABC):
 
     async def download_image_via_browser(self, url: str, filepath: Path, referer: str = "", max_retries: int = 5) -> bool:
         """
-        使用浏览器上下文下载图片（保持会话状态，带重试机制，指数退避）
+        使用浏览器上下文下载图片（保持会话状态，带重试机制，指数退避，限速）
 
         Args:
             url: 图片 URL
@@ -346,6 +353,9 @@ class BaseCrawler(ABC):
         last_error = None
         for attempt in range(1, max_retries + 1):
             try:
+                # 应用下载限速（防止请求过快被封禁）
+                await self._apply_rate_limit()
+
                 # 使用关键字参数传递超时（兼容新版 httpx）
                 timeout = httpx.Timeout(
                     connect=cfg.network.timeout_connect,
@@ -384,6 +394,28 @@ class BaseCrawler(ABC):
 
         logger.error(f"浏览器下载最终失败: {last_error}, URL: {url[:60]}")
         return False
+
+    async def _apply_rate_limit(self):
+        """
+        应用下载限速（基于配置的下载间隔）
+        防止请求过快被网站封禁
+        """
+        if not self.cfg:
+            return
+
+        # 从配置获取下载间隔，默认 0.3 秒
+        download_delay = getattr(self.cfg.crawler, 'download_delay', 0.3)
+
+        async with self._download_lock:
+            current_time = time.monotonic()
+            elapsed = current_time - self._last_download_time
+
+            if elapsed < download_delay:
+                wait_time = download_delay - elapsed
+                logger.debug(f"限速等待 {wait_time:.2f}s (间隔: {download_delay}s)")
+                await asyncio.sleep(wait_time)
+
+            self._last_download_time = time.monotonic()
 
     def sanitize_filename(self, name: str, max_length: int = 80) -> str:
         """清理文件名"""
