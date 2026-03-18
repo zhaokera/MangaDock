@@ -7,7 +7,7 @@ import asyncio
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Optional, List, Callable, Any, Dict, TYPE_CHECKING
+from typing import Optional, List, Callable, Any, Dict, TYPE_CHECKING, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,6 +16,9 @@ if TYPE_CHECKING:
 
 # 导入 config 用于 get_http_client
 import config
+
+# 导入断点续传模块
+from .resume import get_resume_manager, ResumeInfo
 
 
 # 模块级日志记录器
@@ -105,6 +108,13 @@ class BaseCrawler(ABC):
         # 限速相关
         self._last_download_time: float = 0
         self._download_lock = asyncio.Lock()
+        # 断点续传相关
+        self._resume_manager = None
+        self._resume_info: Optional[ResumeInfo] = None
+        # 进度统计相关
+        self._start_time: Optional[float] = None
+        self._downloaded_bytes: int = 0
+        self._speed_samples: List[tuple] = field(default_factory=list)  # (timestamp, bytes, cumulative)
 
     async def get_http_client(self) -> "httpx.AsyncClient":
         """
@@ -472,14 +482,77 @@ class BaseCrawler(ABC):
             # 发送进度回调
             if progress_callback:
                 current = i + 1
-                progress_callback({
+                progress_stats = {
                     "current": current,
                     "total": total or len(url_filepairs),
                     "message": f"下载中 {current}/{total or len(url_filepairs)}",
                     "success_count": success_count,
-                })
+                }
+                # 添加速度和ETA信息
+                progress_stats.update(self._calculate_progress_stats(current, total or len(url_filepairs)))
+                progress_callback(progress_stats)
 
         return success_count
+
+    def _calculate_progress_stats(self, current: int, total: int) -> dict:
+        """
+        计算进度统计信息（速度、ETA等）
+
+        Args:
+            current: 当前完成数
+            total: 总数
+
+        Returns:
+            dict: 进度统计信息
+        """
+        result = {}
+
+        if self._start_time is None:
+            return result
+
+        elapsed = time.monotonic() - self._start_time
+
+        # 计算平均速度
+        if elapsed > 0 and self._downloaded_bytes > 0:
+            avg_speed = self._downloaded_bytes / elapsed
+            result["avg_speed_bytes"] = avg_speed
+            result["avg_speed_str"] = self._format_speed(avg_speed)
+
+            # 计算剩余时间和ETA
+            if total > 0 and current > 0:
+                eta_seconds = (total - current) * (elapsed / current)
+                result["eta_seconds"] = eta_seconds
+                result["eta_str"] = self._format_eta(eta_seconds)
+
+        # 添加完成百分比
+        if total > 0:
+            result["percentage"] = int(current / total * 100)
+
+        return result
+
+    def _format_speed(self, bytes_per_second: float) -> str:
+        """格式化速度显示"""
+        if bytes_per_second < 1024:
+            return f"{bytes_per_second:.1f} B/s"
+        elif bytes_per_second < 1024 * 1024:
+            return f"{bytes_per_second / 1024:.1f} KB/s"
+        else:
+            return f"{bytes_per_second / (1024 * 1024):.1f} MB/s"
+
+    def _format_eta(self, seconds: float) -> str:
+        """格式化ETA显示"""
+        if seconds <= 0:
+            return "--:--"
+        elif seconds < 60:
+            return f"{int(seconds)}s"
+        elif seconds < 3600:
+            minutes = int(seconds // 60)
+            secs = int(seconds % 60)
+            return f"{minutes}:{secs:02d}"
+        else:
+            hours = int(seconds // 3600)
+            minutes = int((seconds % 3600) // 60)
+            return f"{hours}:{minutes:02d}"
 
     async def login(
         self,
@@ -516,3 +589,47 @@ class BaseCrawler(ABC):
         """
         # 默认实现：不做任何操作
         return True
+
+    async def enable_resume(self, task_id: str, url: str, platform: str, total: int = 0):
+        """
+        启用断点续传
+
+        Args:
+            task_id: 任务ID
+            url: 漫画URL
+            platform: 平台名称
+            total: 总页数
+        """
+        self._resume_manager = get_resume_manager()
+        self._resume_info = await self._resume_manager.load_progress(task_id)
+
+        if self._resume_info is None:
+            # 创建新的进度记录
+            self._resume_info = ResumeInfo(
+                task_id=task_id,
+                url=url,
+                platform=platform,
+                total=total,
+            )
+        else:
+            logger.info(f"恢复断点续传: {task_id} (已下载 {self._resume_info.downloaded_count}/{self._resume_info.total})")
+
+    async def get_downloaded_urls(self) -> List[str]:
+        """获取已下载的URL列表"""
+        if self._resume_info:
+            return self._resume_info.downloaded_urls.copy()
+        return []
+
+    async def update_resume_progress(self, total: int, downloaded: int, success: int, failed: int,
+                                      downloaded_urls: List[str], failed_urls: Dict[str, str]):
+        """更新断点续传进度"""
+        if self._resume_info and self._resume_manager:
+            self._resume_info.update_progress(total, downloaded, success, failed)
+            self._resume_info.downloaded_urls = downloaded_urls
+            self._resume_info.failed_urls = failed_urls
+            await self._resume_manager.save_progress(self._resume_info)
+
+    async def disable_resume(self, task_id: str):
+        """禁用断点续传，清理进度"""
+        if self._resume_manager:
+            await self._resume_manager.remove_progress(task_id)

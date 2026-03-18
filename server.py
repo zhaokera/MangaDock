@@ -52,6 +52,7 @@ from crawlers import (
 )
 from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 from crawlers.auth import get_auth_manager, AuthManager
+from crawlers.resume import get_resume_manager, ResumeInfo
 from crawlers.registry import get_crawler_by_platform
 
 # 导入配置管理
@@ -1056,6 +1057,86 @@ async def auth_platforms():
             })
 
     return {"platforms": supported, "total": len(supported)}
+
+
+# ============== 断点续传 API ==============
+
+class ResumeStatus(BaseModel):
+    """断点续传状态"""
+    task_id: str
+    url: str
+    platform: str
+    total: int
+    downloaded_count: int
+    success_count: int
+    failed_count: int
+    created_at: str
+    last_updated: str
+
+
+@app.get("/api/resume/status/{task_id}")
+async def get_resume_status(task_id: str):
+    """获取断点续传状态"""
+    resume_manager = get_resume_manager()
+    info = await resume_manager.load_progress(task_id)
+
+    if info is None:
+        raise HTTPException(status_code=404, detail="未找到断点续传记录")
+
+    return ResumeStatus(
+        task_id=info.task_id,
+        url=info.url,
+        platform=info.platform,
+        total=info.total,
+        downloaded_count=info.downloaded_count,
+        success_count=info.success_count,
+        failed_count=info.failed_count,
+        created_at=info.created_at,
+        last_updated=info.last_updated,
+    )
+
+
+@app.delete("/api/resume/{task_id}")
+async def delete_resume(task_id: str):
+    """删除断点续传记录"""
+    resume_manager = get_resume_manager()
+    result = await resume_manager.remove_progress(task_id)
+
+    if result:
+        return {"status": "deleted", "task_id": task_id}
+    else:
+        raise HTTPException(status_code=404, detail="未找到断点续传记录")
+
+
+@app.get("/api/resume/list")
+async def list_resumes():
+    """列出所有断点续传记录"""
+    resume_manager = get_resume_manager()
+    infos = await resume_manager.get_all_resumes()
+
+    resumes = []
+    for info in infos:
+        resumes.append(ResumeStatus(
+            task_id=info.task_id,
+            url=info.url,
+            platform=info.platform,
+            total=info.total,
+            downloaded_count=info.downloaded_count,
+            success_count=info.success_count,
+            failed_count=info.failed_count,
+            created_at=info.created_at,
+            last_updated=info.last_updated,
+        ))
+
+    return {"resumes": resumes, "total": len(resumes)}
+
+
+@app.post("/api/resume/cleanup")
+async def cleanup_resumes(days: int = 7):
+    """清理旧的断点续传记录"""
+    resume_manager = get_resume_manager()
+    count = await resume_manager.cleanup_old_resumes(days)
+    return {"cleaned": count, "days": days}
 
 
 # ============== 启动 ==============

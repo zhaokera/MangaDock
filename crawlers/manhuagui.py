@@ -607,6 +607,10 @@ class ManhuaguiCrawler(BaseCrawler):
             if progress_callback:
                 progress_callback(progress)
 
+        # 记录开始时间
+        self._start_time = time.time()
+        self._downloaded_bytes = 0
+
         # 提取 ID
         comic_id, chapter_id = self._extract_ids(url)
         if not comic_id or not chapter_id:
@@ -1299,12 +1303,30 @@ class ManhuaguiCrawler(BaseCrawler):
         # 输出下载结果
         logger.debug(f" 并发下载完成: {success_count}/{total} 张图片成功")
 
+        # 计算下载速度和ETA
+        download_end_time = time.time()
+        download_duration = download_end_time - start_time
+        avg_speed = total / download_duration if download_duration > 0 else 0
+
+        logger.debug(f" 并发下载完成: {success_count}/{total} 张图片成功")
+        logger.debug(f" 总耗时: {download_duration:.2f}秒")
+        logger.debug(f" 平均速度: {avg_speed:.2f}张/秒")
+
         # 最终进度报告
+        progress_stats = {}
+        if self._start_time:
+            elapsed = download_end_time - self._start_time
+            if elapsed > 0:
+                progress_stats["avg_speed_str"] = f"{avg_speed:.2f}张/秒"
+                if total > 0 and success_count < total:
+                    eta = (total - success_count) / avg_speed
+                    progress_stats["eta_str"] = f"{int(eta)}s"
         report(DownloadProgress(
             current=total,
             total=total,
             message=f"下载完成! 共 {success_count} 张图片",
-            status="completed"
+            status="completed",
+            extra=progress_stats if progress_stats else None
         ))
 
         # 记录结束时间并输出总耗时
