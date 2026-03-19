@@ -226,6 +226,9 @@ class ConfigManager:
         if os.environ.get('DOWNLOAD_TIMEOUT'):
             self.config.network.timeout_download = int(os.environ.get('DOWNLOAD_TIMEOUT'))
 
+        if os.environ.get('CONNECT_TIMEOUT'):
+            self.config.network.timeout_connect = int(os.environ.get('CONNECT_TIMEOUT'))
+
         # 下载配置
         if os.environ.get('CONCURRENT_DOWNLOADS'):
             self.config.download.concurrency = int(os.environ.get('CONCURRENT_DOWNLOADS'))
@@ -233,9 +236,18 @@ class ConfigManager:
         if os.environ.get('OUTPUT_DIR'):
             self.config.download.output_dir = os.environ.get('OUTPUT_DIR')
 
+        if os.environ.get('ENABLE_ZIP') is not None:
+            self.config.download.enable_zip = os.environ.get('ENABLE_ZIP').lower() == 'true'
+
+        if os.environ.get('MAX_CONCURRENT_IMAGES'):
+            self.config.download.max_concurrent_images = int(os.environ.get('MAX_CONCURRENT_IMAGES'))
+
         # 日志配置
         if os.environ.get('LOG_LEVEL'):
             self.config.logging.level = os.environ.get('LOG_LEVEL')
+
+        if os.environ.get('LOG_FILE'):
+            self.config.logging.file = os.environ.get('LOG_FILE')
 
         # 服务配置
         if os.environ.get('HOST'):
@@ -243,6 +255,20 @@ class ConfigManager:
 
         if os.environ.get('PORT'):
             self.config.port = int(os.environ.get('PORT'))
+
+        # SSE 配置
+        if os.environ.get('SSE_HEARTBEAT_INTERVAL'):
+            self.config.sse.heartbeat_interval = int(os.environ.get('SSE_HEARTBEAT_INTERVAL'))
+
+        if os.environ.get('SSE_BUFFER_SIZE'):
+            self.config.sse.buffer_size = int(os.environ.get('SSE_BUFFER_SIZE'))
+
+        # 浏览器配置
+        if os.environ.get('BROWSER_IDLE_TIMEOUT'):
+            self.config.crawler.browser_idle_timeout = int(os.environ.get('BROWSER_IDLE_TIMEOUT'))
+
+        if os.environ.get('BROWSER_CLEANUP_INTERVAL'):
+            self.config.crawler.browser_cleanup_interval = int(os.environ.get('BROWSER_CLEANUP_INTERVAL'))
 
     def validate(self) -> list[str]:
         """验证配置值的有效性"""
@@ -252,6 +278,8 @@ class ConfigManager:
         # 验证下载并发数
         if cfg.download.concurrency < 1:
             errors.append("download.concurrency 必须 >= 1")
+        if cfg.download.max_concurrent_images < 1:
+            errors.append("download.max_concurrent_images 必须 >= 1")
 
         # 验证网络超时
         if cfg.network.timeout_connect <= 0:
@@ -275,6 +303,12 @@ class ConfigManager:
         if cfg.port < 1 or cfg.port > 65535:
             errors.append("server.port 必须在 1-65535 范围内")
 
+        # 验证浏览器池配置
+        if cfg.crawler.browser_idle_timeout < 60:
+            errors.append("crawler.browser_idle_timeout 必须 >= 60 秒")
+        if cfg.crawler.browser_cleanup_interval < 30:
+            errors.append("crawler.browser_cleanup_interval 必须 >= 30 秒")
+
         return errors
 
 
@@ -291,16 +325,122 @@ def get_config() -> Config:
         # 验证配置
         errors = _config_manager.validate()
         if errors:
-            logger.warning(f"配置警告: {errors}")
+            logger.warning(f"配置警告: {'; '.join(errors)}")
     return _config
 
 
-def reload_config():
+def reload_config() -> Config:
     """重新加载配置（重新验证）"""
     global _config
     _config = _config_manager.load()
     # 验证配置
     errors = _config_manager.validate()
     if errors:
-        logger.warning(f"配置警告: {errors}")
+        logger.warning(f"配置警告: {'; '.join(errors)}")
     return _config
+
+
+import threading
+import time
+
+
+class ConfigWatcher:
+    """配置文件监听器，支持热重载"""
+
+    def __init__(self, config_path: str = "config.yaml", callback=None, interval: float = 2.0):
+        """
+        初始化配置监听器
+
+        Args:
+            config_path: 配置文件路径
+            callback: 配置变化时的回调函数
+            interval: 检查间隔（秒）
+        """
+        self.config_path = Path(config_path)
+        self.callback = callback
+        self.interval = interval
+        self._watching = False
+        self._thread = None
+        self._last_mtime = None
+        self._lock = threading.Lock()
+
+    def _check_config_changed(self) -> bool:
+        """检查配置文件是否变化"""
+        if not self.config_path.exists():
+            return False
+        try:
+            current_mtime = self.config_path.stat().st_mtime
+            with self._lock:
+                if self._last_mtime is None:
+                    self._last_mtime = current_mtime
+                    return False
+                if current_mtime > self._last_mtime:
+                    self._last_mtime = current_mtime
+                    return True
+                return False
+        except Exception as e:
+            logger.debug(f"检查配置文件变化失败: {e}")
+            return False
+
+    def _watch_loop(self):
+        """监听循环"""
+        while self._watching:
+            if self._check_config_changed():
+                logger.info("检测到配置文件变化，正在重新加载...")
+                try:
+                    reload_config()
+                    if self.callback:
+                        self.callback()
+                    logger.info("配置重载完成")
+                except Exception as e:
+                    logger.error(f"配置重载失败: {e}")
+            time.sleep(self.interval)
+
+    def start(self):
+        """启动监听"""
+        if self._watching:
+            return
+        self._watching = True
+        self._thread = threading.Thread(target=self._watch_loop, daemon=True)
+        self._thread.start()
+        logger.info(f"配置监听器已启动，监听文件: {self.config_path}")
+
+    def stop(self):
+        """停止监听"""
+        if not self._watching:
+            return
+        self._watching = False
+        if self._thread:
+            self._thread.join(timeout=5.0)
+        logger.info("配置监听器已停止")
+
+
+# 全局配置监听器实例
+_config_watcher: Optional[ConfigWatcher] = None
+
+
+def start_config_watcher(callback=None, interval: float = 2.0) -> ConfigWatcher:
+    """
+    启动配置文件监听器，支持热重载
+
+    Args:
+        callback: 配置变化时的回调函数
+        interval: 检查间隔（秒）
+
+    Returns:
+        ConfigWatcher: 监听器实例
+    """
+    global _config_watcher
+    if _config_watcher:
+        _config_watcher.stop()
+    _config_watcher = ConfigWatcher(callback=callback, interval=interval)
+    _config_watcher.start()
+    return _config_watcher
+
+
+def stop_config_watcher():
+    """停止配置文件监听器"""
+    global _config_watcher
+    if _config_watcher:
+        _config_watcher.stop()
+        _config_watcher = None

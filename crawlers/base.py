@@ -88,6 +88,9 @@ DEFAULT_IMAGE_HEADERS = {
 }
 
 
+CHUNK_SIZE = 8192  # 文件下载块大小
+
+
 class BaseCrawler(ABC):
     """漫画爬虫基类"""
 
@@ -155,7 +158,7 @@ class BaseCrawler(ABC):
             )
         return self.http_client
 
-    async def close_http_client(self):
+    async def close_http_client(self) -> None:
         """关闭共享的 httpx 客户端"""
         if self.http_client:
             await self.http_client.aclose()
@@ -192,6 +195,18 @@ class BaseCrawler(ABC):
         pass
 
     @abstractmethod
+    async def get_image_urls(self, url: str) -> List[str]:
+        """
+        提取图片URL列表（子类必须实现）
+
+        Args:
+            url: 漫画章节 URL
+
+        Returns:
+            List[str]: 图片URL列表
+        """
+        pass
+
     async def download(
         self,
         url: str,
@@ -199,7 +214,7 @@ class BaseCrawler(ABC):
         progress_callback: Optional[ProgressCallback] = None
     ) -> str:
         """
-        下载漫画
+        下载漫画（模板方法，提供默认实现）
 
         Args:
             url: 漫画章节 URL
@@ -209,9 +224,148 @@ class BaseCrawler(ABC):
         Returns:
             str: 保存路径
         """
-        pass
+        # 子类可以覆盖此方法使用自定义逻辑，或使用默认模板方法
+        # 默认实现：使用顺序下载策略
+        return await self._download_sequential(url, output_dir, progress_callback)
 
-    async def start_browser(self, headless: bool = True):
+    async def _download_sequential(
+        self,
+        url: str,
+        output_dir: str,
+        progress_callback: Optional[ProgressCallback] = None,
+        max_retries: int = 3
+    ) -> str:
+        """
+        顺序下载图片（默认实现）
+
+        Args:
+            url: 漫画章节 URL
+            output_dir: 输出目录
+            progress_callback: 进度回调函数
+            max_retries: 最大重试次数
+
+        Returns:
+            str: 保存路径
+        """
+        # 提取图片URL
+        image_urls = await self.get_image_urls(url)
+        total = len(image_urls)
+
+        if total == 0:
+            raise ValueError("下载失败[NO_IMAGES]: 未找到任何图片，请检查链接是否正确或网站结构是否变化")
+
+        # 发送进度回调
+        if progress_callback:
+            progress_callback(DownloadProgress(
+                current=0,
+                total=total,
+                message=f"准备下载 {total} 张图片...",
+                status="downloading"
+            ))
+
+        # 创建保存目录
+        save_dir = Path(output_dir) / f"download_{int(time.time())}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # 顺序下载
+        success_count = 0
+        for i, img_url in enumerate(image_urls, 1):
+            try:
+                ext = self._get_image_extension(img_url)
+                filepath = save_dir / f"{i:03d}{ext}"
+
+                if await self.download_image(img_url, filepath, max_retries=max_retries):
+                    success_count += 1
+
+                # 发送进度回调
+                if progress_callback:
+                    progress_callback(DownloadProgress(
+                        current=i,
+                        total=total,
+                        message=f"下载中 {i}/{total}",
+                        status="downloading"
+                    ))
+
+            except Exception as e:
+                logger.error(f"下载失败 [URL: {img_url[:60]}...]: {type(e).__name__}: {e}")
+
+        logger.info(f"下载完成: {success_count}/{total}")
+        return str(save_dir)
+
+    async def _download_concurrent(
+        self,
+        url: str,
+        output_dir: str,
+        progress_callback: Optional[ProgressCallback] = None,
+        max_concurrent: int = 5,
+        max_retries: int = 3
+    ) -> str:
+        """
+        并发下载图片
+
+        Args:
+            url: 漫画章节 URL
+            output_dir: 输出目录
+            progress_callback: 进度回调函数
+            max_concurrent: 最大并发数
+            max_retries: 最大重试次数
+
+        Returns:
+            str: 保存路径
+        """
+        # 提取图片URL
+        image_urls = await self.get_image_urls(url)
+        total = len(image_urls)
+
+        if total == 0:
+            raise ValueError("下载失败[NO_IMAGES]: 未找到任何图片，请检查链接是否正确或网站结构是否变化")
+
+        # 发送进度回调
+        if progress_callback:
+            progress_callback(DownloadProgress(
+                current=0,
+                total=total,
+                message=f"准备下载 {total} 张图片...",
+                status="downloading"
+            ))
+
+        # 创建保存目录
+        save_dir = Path(output_dir) / f"download_{int(time.time())}"
+        save_dir.mkdir(parents=True, exist_ok=True)
+
+        # 并发下载
+        success_count = await self.download_images_batch(
+            url_filepairs=[
+                (img_url, save_dir / f"{i:03d}{self._get_image_extension(img_url)}")
+                for i, img_url in enumerate(image_urls, 1)
+            ],
+            max_concurrent=max_concurrent,
+            progress_callback=progress_callback,
+            total=total
+        )
+
+        logger.info(f"并发下载完成: {success_count}/{total} 张图片")
+        return str(save_dir)
+
+    def _get_image_extension(self, url: str) -> str:
+        """
+        根据URL获取图片扩展名
+
+        Args:
+            url: 图片URL
+
+        Returns:
+            str: 扩展名
+        """
+        if ".webp" in url.lower():
+            return ".webp"
+        elif ".png" in url.lower():
+            return ".png"
+        elif ".gif" in url.lower():
+            return ".gif"
+        return ".jpg"
+
+    async def start_browser(self, headless: bool = True) -> None:
         """启动浏览器"""
         import httpx
         import config
@@ -269,6 +423,11 @@ class BaseCrawler(ABC):
     async def close_browser(self):
         """关闭浏览器"""
         await self.close_http_client()
+        # 按相反顺序关闭资源
+        if self.page:
+            await self.page.close()
+        if self.context:
+            await self.context.close()
         if self.browser:
             await self.browser.close()
         if self.playwright:
@@ -327,7 +486,7 @@ class BaseCrawler(ABC):
 
                         # 流式写入文件
                         with filepath.open('wb') as f:
-                            async for chunk in response.aiter_bytes(8192):
+                            async for chunk in response.aiter_bytes(CHUNK_SIZE):
                                 f.write(chunk)
                         return True
                     else:
@@ -382,7 +541,7 @@ class BaseCrawler(ABC):
                 if response.ok:
                     # 流式写入文件，不缓存到内存
                     with filepath.open('wb') as f:
-                        async for chunk in response.iter_bytes(8192):
+                        async for chunk in response.iter_bytes(CHUNK_SIZE):
                             f.write(chunk)
                     return True
                 else:
@@ -405,7 +564,7 @@ class BaseCrawler(ABC):
         logger.error(f"浏览器下载最终失败: {last_error}, URL: {url[:60]}")
         return False
 
-    async def _apply_rate_limit(self):
+    async def _apply_rate_limit(self) -> None:
         """
         应用下载限速（基于配置的下载间隔）
         防止请求过快被网站封禁
@@ -577,7 +736,7 @@ class BaseCrawler(ABC):
         if not username or not password:
             return False
         # 子类应该覆盖此方法实现具体的登录逻辑
-        logger.warning(f"平台 {self.PLATFORM_NAME} 未实现登录逻辑")
+        logger.warning(f"平台 [{self.PLATFORM_NAME}] 未实现登录逻辑，使用默认登录")
         return False
 
     async def logout(self) -> bool:
@@ -590,7 +749,7 @@ class BaseCrawler(ABC):
         # 默认实现：不做任何操作
         return True
 
-    async def enable_resume(self, task_id: str, url: str, platform: str, total: int = 0):
+    async def enable_resume(self, task_id: str, url: str, platform: str, total: int = 0) -> None:
         """
         启用断点续传
 
@@ -629,7 +788,7 @@ class BaseCrawler(ABC):
             self._resume_info.failed_urls = failed_urls
             await self._resume_manager.save_progress(self._resume_info)
 
-    async def disable_resume(self, task_id: str):
+    async def disable_resume(self, task_id: str) -> None:
         """禁用断点续传，清理进度"""
         if self._resume_manager:
             await self._resume_manager.remove_progress(task_id)

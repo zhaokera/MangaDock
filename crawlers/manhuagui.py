@@ -33,6 +33,90 @@ _LZ_PATTERN = re.compile(r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)
 _JSON_PATTERN = re.compile(r'"files"\s*:\s*\[(.*?)\]', re.DOTALL)
 _IMG_SERVER_PATTERN = re.compile(r'https?://[^.]+\.hamreus\.com')
 
+# 网站 URL 常量
+_MANHUAGUI_BASE_URL = "https://www.manhuagui.com"
+_MANHUAGUI_LOGIN_URL = "https://www.manhuagui.com/login"
+_MANHUAGUI_LOGOUT_URL = "https://www.manhuagui.com/logout"
+
+# 默认等待配置
+_DEFAULT_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
+_DEFAULT_MEDIUM_WAIT = 1.0  # 中等优先级等待 (1秒)
+_DEFAULT_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
+_DEFAULT_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
+_DEFAULT_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
+
+
+# ============== 智能等待辅助函数 ==============
+
+async def wait_for_page_ready(page, max_wait: float = _DEFAULT_MAX_WAIT, check_interval: float = _DEFAULT_CHECK_INTERVAL) -> bool:
+    """
+    智能等待页面就绪，检查关键元素是否存在
+
+    Args:
+        page: Playwright page 对象
+        max_wait: 最大等待时间
+        check_interval: 检查间隔
+
+    Returns:
+        bool: 页面是否就绪
+    """
+    start_time = time.time()
+    while time.time() - start_time < max_wait:
+        # 检查页面是否加载完成
+        ready = await page.evaluate('''() => {
+            return document.readyState === 'complete' ||
+                   document.readyState === 'interactive';
+        }''')
+        if ready:
+            return True
+        await asyncio.sleep(check_interval)
+    return True  # 超时也返回 True（后续操作会处理）
+
+
+async def wait_for_element(page, selector: str, timeout: float = _DEFAULT_MAX_WAIT) -> bool:
+    """
+    等待元素出现
+
+    Args:
+        page: Playwright page 对象
+        selector: CSS 选择器
+        timeout: 超时时间
+
+    Returns:
+        bool: 元素是否存在
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        exists = await page.evaluate(f'''() => {{
+            return !!document.querySelector('{selector}');
+        }}''')
+        if exists:
+            return True
+        await asyncio.sleep(_DEFAULT_CHECK_INTERVAL)
+    return False
+
+
+async def wait_for_navigation(page, timeout: float = _DEFAULT_MAX_WAIT) -> bool:
+    """
+    等待页面导航完成
+
+    Args:
+        page: Playwright page 对象
+        timeout: 超时时间
+
+    Returns:
+        bool: 导航是否完成
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        ready = await page.evaluate('''() => {
+            return document.readyState === 'complete';
+        }''')
+        if ready:
+            return True
+        await asyncio.sleep(_DEFAULT_CHECK_INTERVAL)
+    return True
+
 
 # LZString 解密实现 - 使用正确的算法
 def lzstring_decompress(input_str: str) -> str:
@@ -139,12 +223,6 @@ def lzstring_decompress(input_str: str) -> str:
     return ""
 
 
-# 模块级预编译正则表达式
-_IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
-_LZ_PATTERN = re.compile(r'LZString\.decompressFromBase64\(["\']([^"\']+)["\']\)')
-_JSON_PATTERN = re.compile(r'"files"\s*:\s*\[(.*?)\]', re.DOTALL)
-
-
 def extract_images_from_page(page_content: str) -> List[str]:
     """
     从页面内容中提取图片 URL
@@ -167,7 +245,7 @@ def extract_images_from_page(page_content: str) -> List[str]:
     for lz_data in lz_matches:
         try:
             # 尝试解密
-            decoded = decompress_lzstring(lz_data)
+            decoded = lzstring_decompress(lz_data)
             if decoded:
                 # 从解密后的数据中提取图片 URL
                 found_images = _IMG_PATTERN.findall(decoded)
@@ -194,6 +272,9 @@ def extract_images_from_page(page_content: str) -> List[str]:
     return list(set(images))
 
 
+from functools import lru_cache
+
+
 # ============== 常量定义 ==============
 
 # 字母数字到数字的映射（用于解码文件名）
@@ -217,6 +298,7 @@ _EXT_MAP = {
 }
 
 
+@lru_cache(maxsize=256)
 def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
     """
     解码混淆的文件名
@@ -247,6 +329,7 @@ def _decode_filename(filename: str, comic_id: int, chapter_id: int) -> str:
     return filename
 
 
+@lru_cache(maxsize=64)
 def _decode_path(path: str, comic_id: int, chapter_id: int) -> str:
     """
     解码混淆的路径
@@ -570,6 +653,61 @@ class ManhuaguiCrawler(BaseCrawler):
             comic_id=str(comic_id),
             episode_id=str(chapter_id),
         )
+
+    async def get_image_urls(self, url: str) -> List[str]:
+        """
+        提取图片URL列表（使用网络拦截和页面滚动）
+
+        漫画柜的图片通过JavaScript动态加载，需要：
+        1. 捕获网络请求中的图片URL
+        2. 滚动页面触发懒加载
+        3. 尝试点击下一页按钮
+        """
+        captured_urls = []
+
+        async def capture_image(response):
+            """响应拦截器 - 捕获图片URL"""
+            resp_url = str(response.url)
+            # 漫画柜图片通常包含 /comic/ 或 /hamreus/ 等路径
+            if any(ext in resp_url.lower() for ext in ['.jpg', '.png', '.webp', '.jpeg']):
+                if 'comic' in resp_url.lower() or 'hamreus' in resp_url.lower():
+                    captured_urls.append(resp_url)
+
+        # 设置响应拦截器
+        self.page.on("response", capture_image)
+
+        try:
+            # 滚动页面触发所有图片加载
+            for scroll_count in range(20):
+                await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await self.page.wait_for_timeout(300)
+
+                # 如果已经捕获了图片，等待更多
+                if len(captured_urls) > 0:
+                    await self.page.wait_for_timeout(500)
+
+            # 点击下一页按钮尝试加载更多图片
+            for _ in range(5):
+                next_btn = await self.page.query_selector('#next, .next, a[onclick*="next"]')
+                if next_btn:
+                    await next_btn.click()
+                    await self.page.wait_for_timeout(1000)
+
+            # 等待网络稳定
+            await self.page.wait_for_timeout(2000)
+
+        finally:
+            # 移除监听器
+            self.page.off("response", capture_image)
+
+        # 去重并保持顺序
+        unique_urls = list(dict.fromkeys(captured_urls))
+
+        if not unique_urls:
+            raise Exception("下载失败[NO_IMAGES]: 未找到图片，网站结构可能已变化，请检查链接是否正确")
+
+        logger.info(f"找到 {len(unique_urls)} 张图片")
+        return unique_urls
 
     async def download(
         self,
@@ -1025,7 +1163,8 @@ class ManhuaguiCrawler(BaseCrawler):
                     logger.debug(f" 翻页前: 第 {prev_page} 页")
 
                     await self.page.evaluate(f'SMH.utils.goPage({page_num})')
-                    await asyncio.sleep(2)
+                    # 智能等待页面加载完成
+                    await wait_for_page_ready(self.page, max_wait=3.0, check_interval=0.3)
 
                     # 验证是否成功翻页到目标页
                     current_page = await self.page.evaluate('''
@@ -1064,8 +1203,7 @@ class ManhuaguiCrawler(BaseCrawler):
 
                 except Exception as e:
                     logger.debug(f" 翻页到第 {page_num} 页失败: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    logger.exception(e)
                     break
 
             logger.debug(f" SMH 翻页后图片数量: {len(image_urls)}")
@@ -1176,7 +1314,7 @@ class ManhuaguiCrawler(BaseCrawler):
         page_url = url
 
         if not image_urls:
-            raise Exception("未找到图片，网站结构可能已变化")
+            raise Exception("下载失败[NO_IMAGES]: 未找到图片，网站结构可能已变化，请检查链接是否正确")
 
         total = len(image_urls)
         manga_info.title = comic_title
@@ -1200,7 +1338,6 @@ class ManhuaguiCrawler(BaseCrawler):
             message=f"准备下载 {total} 张图片...",
             status="downloading"
         ))
-        await asyncio.sleep(0.5)  # 短暂延迟让前端更新
 
         # 下载图片 - 使用并发下载
         logger.debug(f" 开始并发下载，共 {total} 张图片")
@@ -1217,7 +1354,7 @@ class ManhuaguiCrawler(BaseCrawler):
         # 创建Semaphore限制最大并发数
         semaphore = asyncio.Semaphore(concurrency)
 
-        async def download_with_semaphore(img_url, filepath, page_url, i, total):
+        async def download_with_semaphore(img_url: str, filepath: Path, page_url: str, i: int, total: int) -> bool:
             """带并发限制的下载函数 - 使用并发下载策略"""
             async with semaphore:
                 ext = ".jpg"
@@ -1295,8 +1432,12 @@ class ManhuaguiCrawler(BaseCrawler):
             if temp_path.exists():
                 new_filename = f"{orig_idx:03d}{ext}"
                 new_path = save_dir / new_filename
-                temp_path.rename(new_path)
-                renamed_count += 1
+                try:
+                    temp_path.rename(new_path)
+                    renamed_count += 1
+                except OSError as e:
+                    logger.warning(f"文件重命名失败 [{temp_filename} -> {new_filename}]: {e}")
+                    # 继续处理其他文件
 
         logger.debug(f" 文件重命名完成: {renamed_count}/{len(temp_file_mapping)}")
 
@@ -1335,7 +1476,10 @@ class ManhuaguiCrawler(BaseCrawler):
         current_time = time.strftime('%H:%M:%S', time.localtime())
         logger.debug(f" 下载任务结束: {current_time}")
         logger.debug(f" 总耗时: {total_duration:.2f}秒")
-        logger.debug(f" 平均速度: {total_duration/total:.2f}秒/张" if total > 0 else "[DEBUG] 无图片下载")
+        if total > 0:
+            logger.debug(f" 平均速度: {total_duration/total:.2f}秒/张")
+        else:
+            logger.debug("[DEBUG] 无图片下载")
 
         return str(save_dir)
 
@@ -1462,8 +1606,8 @@ class ManhuaguiCrawler(BaseCrawler):
 
         try:
             # 访问漫画柜首页
-            await self.page.goto("https://www.manhuagui.com", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            await self.page.goto(_MANHUAGUI_BASE_URL, wait_until="networkidle", timeout=30000)
+            await wait_for_page_ready(self.page, max_wait=3.0, check_interval=0.3)
 
             # 检查是否已经登录
             is_logged_in = await self.page.evaluate('''
@@ -1487,12 +1631,12 @@ class ManhuaguiCrawler(BaseCrawler):
 
             if login_btn:
                 await login_btn.click()
-                await asyncio.sleep(2)
+                await wait_for_page_ready(self.page, max_wait=2.0, check_interval=0.2)
                 logger.debug("点击登录按钮")
 
             # 访问登录页面
-            await self.page.goto("https://www.manhuagui.com/login", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            await self.page.goto(_MANHUAGUI_LOGIN_URL, wait_until="networkidle", timeout=30000)
+            await wait_for_page_ready(self.page, max_wait=2.0, check_interval=0.2)
 
             # 尝试多种选择器查找表单
             form_loaded = await self.page.evaluate('''
@@ -1549,8 +1693,8 @@ class ManhuaguiCrawler(BaseCrawler):
             ''')
             logger.debug(f"提交表单: {submit_success}")
 
-            # 等待登录完成
-            await asyncio.sleep(3)
+            # 等待登录完成 - 智能等待页面跳转
+            await wait_for_page_ready(self.page, max_wait=4.0, check_interval=0.3)
 
             # 验证登录结果
             result = await self.page.evaluate('''
@@ -1611,8 +1755,8 @@ class ManhuaguiCrawler(BaseCrawler):
 
         try:
             # 访问退出链接
-            await self.page.goto("https://www.manhuagui.com/logout", wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
+            await self.page.goto(_MANHUAGUI_LOGOUT_URL, wait_until="networkidle", timeout=30000)
+            await wait_for_page_ready(self.page, max_wait=3.0, check_interval=0.3)
 
             # 验证登出结果
             is_logged_out = await self.page.evaluate('''

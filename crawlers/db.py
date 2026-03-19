@@ -147,6 +147,16 @@ def init_db():
         CREATE INDEX IF NOT EXISTS idx_tasks_created_at
         ON tasks(created_at)
     """)
+    # 复合索引：提高按状态和平台查询的性能
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_status_platform
+        ON tasks(status, platform)
+    """)
+    # 复合索引：提高按平台和创建时间查询的性能（用于历史记录）
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_tasks_platform_created_at
+        ON tasks(platform, created_at)
+    """)
 
     conn.commit()
 

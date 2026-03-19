@@ -118,7 +118,6 @@ app.add_middleware(
 
 # 任务存储
 tasks: dict[str, DownloadTask] = {}
-download_history: list[dict] = []
 
 # SSE 连接管理 - 存储每个任务的最后发送状态
 task_last_sse_state: dict[str, dict] = {}
@@ -164,7 +163,7 @@ async def get_browser_for_platform(platform: str) -> dict:
     async with _browser_pool_lock:
         if platform in _browser_pool:
             # 更新最后使用时间
-            _browser_pool[platform]["last_used"] = asyncio.get_event_loop().time()
+            _browser_pool[platform]["last_used"] = asyncio.get_running_loop().time()
             return _browser_pool[platform]
 
         # 创建新的浏览器实例
@@ -181,7 +180,7 @@ async def get_browser_for_platform(platform: str) -> dict:
         )
         page = await context.new_page()
 
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
         browser_info = {
             "playwright": playwright,
             "browser": browser,
@@ -214,7 +213,7 @@ async def release_browser_for_platform(platform: str):
         if platform in _browser_pool:
             browser_info = _browser_pool[platform]
             browser_info["used_count"] = max(0, browser_info["used_count"] - 1)
-            browser_info["last_used"] = asyncio.get_event_loop().time()
+            browser_info["last_used"] = asyncio.get_running_loop().time()
 
             # 记录使用状态
             logger.debug(f"平台 {platform} 浏览器使用次数: {browser_info['used_count']}")
@@ -256,7 +255,7 @@ async def cleanup_browser_pool():
         # 空闲超时（秒），从配置读取，默认 300 秒（5 分钟）
         idle_timeout = getattr(cfg.crawler, 'browser_idle_timeout', 300)
 
-        current_time = asyncio.get_event_loop().time()
+        current_time = asyncio.get_running_loop().time()
 
         for platform, browser_info in list(_browser_pool.items()):
             if browser_info["used_count"] <= 0:
@@ -323,7 +322,7 @@ def save_history(history: list[dict]) -> None:
 
 async def save_history_async(history: list[dict]) -> None:
     """保存历史记录到文件（异步版本，使用线程池）"""
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     await loop.run_in_executor(None, save_history, history)
 
 
@@ -366,31 +365,6 @@ async def add_history_item(history_item: dict) -> bool:
         return True
 
 
-def cleanup_old_history():
-    """清理过期的历史记录"""
-    try:
-        history_config = CONFIG.history
-        if history_config.auto_cleanup_days > 0:
-            cutoff_date = datetime.now() - timedelta(days=history_config.auto_cleanup_days)
-            # 获取所有历史任务并筛选
-            all_history = get_all_tasks()
-            to_keep = [
-                h for h in all_history
-                if datetime.fromisoformat(h.created_at) > cutoff_date
-            ]
-            # 删除需要清理的任务
-            kept_ids = {h.task_id for h in to_keep}
-            all_ids = {h.task_id for h in all_history}
-            to_delete = all_ids - kept_ids
-            for task_id in to_delete:
-                delete_task(task_id)
-    except Exception as e:
-        logger.error(f"清理历史记录失败: {e}")
-
-
-# 删除旧的历史记录处理（已迁移到数据库）
-
-
 # ============== 下载器 ==============
 
 class MangaDownloader:
@@ -404,6 +378,7 @@ class MangaDownloader:
     def _cleanup_task(self):
         """清理任务相关的资源"""
         task_last_sse_state.pop(self.task.task_id, None)
+        tasks.pop(self.task.task_id, None)  # 自动清理 tasks 字典
 
     async def run(self):
         """执行下载"""
@@ -459,6 +434,24 @@ class MangaDownloader:
             self._cleanup_task()
             # 保存任务到数据库
             save_task(self.task_record)
+
+    async def __aenter__(self):
+        """Async context manager entry"""
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit - 自动清理资源"""
+        # 任务完成或失败后清理浏览器引用
+        if self.crawler:
+            self.crawler.browser = None
+            self.crawler.context = None
+            self.crawler.page = None
+            self.crawler.playwright = None
+        # 清理 SSE 状态
+        self._cleanup_task()
+        # 清理任务状态
+        tasks.pop(self.task.task_id, None)
+
 
     def _update_manga_info(self):
         """更新漫画信息（合并重复逻辑）"""
@@ -539,7 +532,7 @@ class MangaDownloader:
             zip_path = DOWNLOADS_DIR / f"{zip_name}.zip"
 
             # 异步打包
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             def zip_folder_sync():
                 with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
                     for file in sorted(save_dir.iterdir()):
@@ -742,21 +735,33 @@ async def stream_progress(task_id: str, timeout: float = 300.0):
         # 发送初始化状态
         last_state = task_last_sse_state.get(task_id, {})
 
+        # 用于计算进度百分比
+        last_progress_percent = 0
+
         # 检查是否是重要变化（模块级函数，便于测试）
         def is_important_change(current, last) -> bool:
             """判断是否是重要变化（过滤掉 message 的微小变化）"""
+            nonlocal last_progress_percent
+
             # 状态变化是重要事件
             if current.get("status") != last.get("status"):
                 return True
             # 错误变化是重要事件
             if current.get("error") != last.get("error"):
                 return True
-            # progress 变化超过 10% 或跨过重要里程碑
-            if current.get("progress") != last.get("progress"):
-                return True
             # total 变化（通常只在开始时）
             if current.get("total") != last.get("total"):
                 return True
+
+            # 进度变化检查：只在百分比变化超过 5% 时发送
+            current_total = current.get("total", 0)
+            current_progress = current.get("progress", 0)
+            if current_total > 0:
+                current_percent = (current_progress / current_total) * 100
+                if current_percent - last_progress_percent >= 5:  # 5% 阈值
+                    last_progress_percent = current_percent
+                    return True
+
             # message 只在包含关键词时发送（避免下载中 1/50 这种频繁变化）
             msg_changed = current.get("message") != last.get("message")
             if msg_changed:
@@ -1227,5 +1232,13 @@ if __name__ == "__main__":
     idle_timeout = getattr(CONFIG.crawler, 'browser_idle_timeout', 300)
     logger.info(f"  - 浏览器池清理间隔: {cleanup_interval}s")
     logger.info(f"  - 浏览器空闲超时: {idle_timeout}s")
+
+    # 启动配置监听器（热重载）
+    from crawlers import config as crawler_config
+    crawler_config.start_config_watcher(
+        callback=lambda: logger.info("配置已热重载"),
+        interval=5.0
+    )
+    logger.info("配置热重载已启用")
 
     uvicorn.run(app, host=CONFIG.host, port=CONFIG.port)

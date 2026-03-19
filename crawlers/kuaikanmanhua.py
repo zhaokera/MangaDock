@@ -23,9 +23,81 @@ import config
 
 # 模块级预编译正则表达式
 _IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
-_COMIC_ID_PATTERN = re.compile(r'/comic/(\d+)')
+_KEPIC_ID_PATTERN = re.compile(r'/comic/(\d+)')
 _EPISODE_ID_PATTERN = re.compile(r'/comic/\d+/(\d+)')
 _API_PATTERN = re.compile(r'window\.__INITIAL_STATE__\s*=\s*(\{[^<]+\})')
+
+# 默认等待配置
+_KUAIKAN_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
+_KUAIKAN_MEDIUM_WAIT = 1.0  # 中等优先级等待 (1秒)
+_KUAIKAN_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
+_KUAIKAN_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
+_KUAIKAN_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
+
+
+# ============== 智能等待辅助函数 ==============
+
+async def wait_for_page_ready(page, max_wait: float = _KUAIKAN_MAX_WAIT, check_interval: float = _KUAIKAN_CHECK_INTERVAL) -> bool:
+    """
+    智能等待页面就绪，检查关键元素是否存在
+
+    Args:
+        page: Playwright page 对象
+        max_wait: 最大等待时间
+        check_interval: 检查间隔
+
+    Returns:
+        bool: 页面是否就绪
+    """
+    start_time = time.time()
+    while time.time() - start_time < max_wait:
+        ready = await page.evaluate('''() => {
+            return document.readyState === 'complete' ||
+                   document.readyState === 'interactive';
+        }''')
+        if ready:
+            return True
+        await asyncio.sleep(check_interval)
+    return True  # 超时也返回 True（后续操作会处理）
+
+
+async def wait_for_element(page, selector: str, timeout: float = _KUAIKAN_MAX_WAIT) -> bool:
+    """
+    等待元素出现
+
+    Args:
+        page: Playwright page 对象
+        selector: CSS 选择器
+        timeout: 超时时间
+
+    Returns:
+        bool: 元素是否存在
+    """
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        exists = await page.evaluate(f'''() => {{
+            return !!document.querySelector('{selector}');
+        }}''')
+        if exists:
+            return True
+        await asyncio.sleep(_KUAIKAN_CHECK_INTERVAL)
+    return False
+
+
+def _is_kuaikanmanhua_image(url: str) -> bool:
+    """
+    检查 URL 是否为快看漫画的图片
+
+    Args:
+        url: 图片 URL
+
+    Returns:
+        bool: 是否为快看漫画图片
+    """
+    url_lower = url.lower()
+    if not any(ext in url_lower for ext in ['.jpg', '.png', '.webp']):
+        return False
+    return 'kuaikanmanhua' in url_lower or 'kkmh' in url_lower
 
 
 @register_crawler
@@ -66,8 +138,8 @@ class KuaikanmanhuaCrawler(BaseCrawler):
             # 访问页面
             await self.page.goto(url, wait_until="networkidle", timeout=60000)
 
-            # 等待页面加载
-            await asyncio.sleep(2)
+            # 智能等待页面加载
+            await wait_for_page_ready(self.page, max_wait=3.0, check_interval=0.3)
 
             # 获取漫画标题
             comic_title = await self.page.evaluate('''
@@ -116,6 +188,66 @@ class KuaikanmanhuaCrawler(BaseCrawler):
         finally:
             await self.close_browser()
 
+    async def get_image_urls(self, url: str) -> List[str]:
+        """
+        提取图片URL列表（使用网络拦截）
+
+        快看漫画使用特殊的图片加载方式，需要通过网络拦截捕获图片URL。
+        注意：此方法需要在页面加载前设置拦截器。
+        """
+        # 收集图片 URL（使用网络拦截）
+        image_urls = []
+
+        async def capture_image(response):
+            resp_url = str(response.url)
+            if _is_kuaikanmanhua_image(resp_url):
+                image_urls.append(resp_url)
+
+        self.page.on("response", capture_image)
+
+        try:
+            # 模拟滚动加载更多图片
+            # 多次滚动触发懒加载
+            for i in range(10):
+                await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
+                await asyncio.sleep(_KUAIKAN_LOW_WAIT)
+
+            # 等待图片加载完成 - 智能等待
+            await wait_for_page_ready(self.page, max_wait=2.0, check_interval=0.2)
+
+            # 去重但保持顺序
+            unique_urls = list(dict.fromkeys(image_urls))
+
+            # 过滤掉非图片请求（如 favicon 等）
+            image_urls = [url for url in unique_urls if _is_kuaikanmanhua_image(url)]
+
+            total = len(image_urls)
+
+            if total == 0:
+                # 尝试从页面元素直接获取
+                image_urls = await self.page.evaluate('''
+                    () => {
+                        let imgs = Array.from(document.querySelectorAll('img'));
+                        return imgs
+                            .filter(img => img.src && /kuaikanmanhua|kkmh/.test(img.src))
+                            .map(img => img.src);
+                    }
+                ''')
+                image_urls = list(dict.fromkeys(image_urls))
+                total = len(image_urls)
+
+        finally:
+            try:
+                self.page.off("response", capture_image)
+            except Exception:
+                pass
+
+        if not image_urls:
+            raise Exception("下载失败[NO_IMAGES]: 未找到图片，网站结构可能已变化，请检查链接是否正确")
+
+        logger.info(f"找到 {total} 张图片")
+        return image_urls
+
     async def download(
         self,
         url: str,
@@ -162,8 +294,8 @@ class KuaikanmanhuaCrawler(BaseCrawler):
         report(DownloadProgress(message="正在加载页面...", status="downloading"))
         await self.page.goto(url, wait_until="networkidle", timeout=60000)
 
-        # 等待页面加载完成
-        await asyncio.sleep(3)
+        # 智能等待页面加载完成
+        await wait_for_page_ready(self.page, max_wait=4.0, check_interval=0.3)
 
         # 获取章节信息
         chapter_title = await self.page.evaluate('''
@@ -181,10 +313,8 @@ class KuaikanmanhuaCrawler(BaseCrawler):
 
         async def capture_image(response):
             resp_url = str(response.url)
-            # 快看漫画的图片通常包含 /webp/ 或 /jpg/ 等路径
-            if any(ext in resp_url.lower() for ext in ['.jpg', '.png', '.webp']):
-                if 'kuaikanmanhua' in resp_url.lower() or 'kkmh' in resp_url.lower():
-                    image_urls.append(resp_url)
+            if _is_kuaikanmanhua_image(resp_url):
+                image_urls.append(resp_url)
 
         self.page.on("response", capture_image)
 
@@ -195,16 +325,16 @@ class KuaikanmanhuaCrawler(BaseCrawler):
             # 多次滚动触发懒加载
             for i in range(10):
                 await self.page.evaluate("window.scrollBy(0, window.innerHeight)")
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(_KUAIKAN_LOW_WAIT)
 
-            # 等待图片加载完成
-            await asyncio.sleep(2)
+            # 等待图片加载完成 - 智能等待
+            await wait_for_page_ready(self.page, max_wait=2.0, check_interval=0.2)
 
             # 去重但保持顺序
             unique_urls = list(dict.fromkeys(image_urls))
 
             # 过滤掉非图片请求（如 favicon 等）
-            image_urls = [url for url in unique_urls if any(ext in url.lower() for ext in ['.jpg', '.png', '.webp'])]
+            image_urls = [url for url in unique_urls if _is_kuaikanmanhua_image(url)]
 
             total = len(image_urls)
 
@@ -228,7 +358,7 @@ class KuaikanmanhuaCrawler(BaseCrawler):
                 pass
 
         if not image_urls:
-            raise Exception("未找到图片，网站结构可能已变化")
+            raise Exception("下载失败[NO_IMAGES]: 未找到图片，网站结构可能已变化，请检查链接是否正确")
 
         # 设置漫画标题
         manga_info = MangaInfo(
@@ -265,7 +395,7 @@ class KuaikanmanhuaCrawler(BaseCrawler):
         progress_counter = {'value': 0}
         progress_lock = asyncio.Lock()
 
-        async def download_with_semaphore(img_url, filepath, i, total):
+        async def download_with_semaphore(img_url: str, filepath: Path, i: int, total: int) -> bool:
             """带并发限制的下载函数"""
             async with semaphore:
                 ext = ".jpg"
@@ -319,8 +449,12 @@ class KuaikanmanhuaCrawler(BaseCrawler):
                     ext = ".png"
                 new_filename = f"{i:03d}{ext}"
                 new_path = save_dir / new_filename
-                temp_path.rename(new_path)
-                renamed_count += 1
+                try:
+                    temp_path.rename(new_path)
+                    renamed_count += 1
+                except OSError as e:
+                    logger.warning(f"文件重命名失败 [{temp_filename} -> {new_filename}]: {e}")
+                    # 继续处理其他文件
 
         # 最终进度报告
         report(DownloadProgress(

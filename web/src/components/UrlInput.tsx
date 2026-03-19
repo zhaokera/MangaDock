@@ -8,6 +8,19 @@ interface UrlInputProps {
   platforms: Platform[];
 }
 
+// 模块级预编译正则表达式 - 避免在每次 validateUrl 调用时重新编译
+const PLATFORM_PATTERNS = new Map<string, RegExp>();
+
+const getPlatformPattern = (pattern: string): RegExp => {
+  const cached = PLATFORM_PATTERNS.get(pattern);
+  if (cached) {
+    return cached;
+  }
+  const regex = new RegExp(pattern);
+  PLATFORM_PATTERNS.set(pattern, regex);
+  return regex;
+};
+
 const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabled, platforms }) => {
   const [url, setUrl] = useState('');
   const [error, setError] = useState('');
@@ -23,7 +36,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabl
     for (const platform of platforms) {
       for (const pattern of platform.patterns) {
         try {
-          const regex = new RegExp(pattern);
+          const regex = getPlatformPattern(pattern);
           if (regex.test(value)) {
             return { valid: true, platform };
           }
