@@ -8,7 +8,6 @@
 """
 
 import re
-import json
 import asyncio
 import time
 import hashlib

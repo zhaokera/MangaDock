@@ -8,7 +8,6 @@
 """
 
 import re
-import json
 import asyncio
 import time
 from typing import Optional, List
@@ -23,7 +22,7 @@ import config
 
 # 模块级预编译正则表达式
 _IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
-_KEPIC_ID_PATTERN = re.compile(r'/comic/(\d+)')
+_COMIC_ID_PATTERN = re.compile(r'/comic/(\d+)')
 _EPISODE_ID_PATTERN = re.compile(r'/comic/\d+/(\d+)')
 _API_PATTERN = re.compile(r'window\.__INITIAL_STATE__\s*=\s*(\{[^<]+\})')
 

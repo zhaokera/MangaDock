@@ -5,6 +5,7 @@ import asyncio
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from typing import List
 from crawlers.base import BaseCrawler, MangaInfo, DownloadProgress, DEFAULT_USER_AGENT, DEFAULT_IMAGE_HEADERS
 
 
@@ -18,6 +19,9 @@ class TestCrawlerImpl(BaseCrawler):
 
     async def get_info(self, url: str) -> MangaInfo:
         return MangaInfo(title="Test", platform="test")
+
+    async def get_image_urls(self, url: str) -> List[str]:
+        return []
 
     async def download(self, url: str, output_dir: str, progress_callback=None) -> str:
         return output_dir
