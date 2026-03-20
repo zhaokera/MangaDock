@@ -438,6 +438,18 @@ def start_config_watcher(callback=None, interval: float = 2.0) -> ConfigWatcher:
     return _config_watcher
 
 
+# ============== 默认请求头 ==============
+
+DEFAULT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Referer": "https://www.google.com/",
+}
+
+
 def stop_config_watcher():
     """停止配置文件监听器"""
     global _config_watcher

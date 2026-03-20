@@ -197,14 +197,19 @@ class BilibiliCrawler(BaseCrawler):
     async def _get_video_info(self, url: str) -> MangaInfo:
         """获取视频信息"""
         import httpx
+        import json
 
         video_id = self._extract_ids(url)[1]
         if not video_id:
             raise ValueError("无效的视频 URL")
 
-        async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+        headers = config.DEFAULT_HEADERS.copy()
+        headers["Accept-Encoding"] = "gzip, deflate"  # 移除 br 编码
+
+        async with httpx.AsyncClient(headers=headers) as client:
             resp = await client.get(f"{self.VIDEO_API}?bvid={video_id}")
-            data = resp.json()
+            # 使用 response.text() 然后手动 json.loads 来处理编码问题
+            data = json.loads(resp.text)
 
             if data.get('code') != 0:
                 raise ValueError(f"获取视频信息失败: {data.get('message')}")
