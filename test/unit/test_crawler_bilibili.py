@@ -32,7 +32,7 @@ class TestBilibiliCrawler:
     def test_platform_name(self):
         """测试平台名称"""
         assert BilibiliCrawler.PLATFORM_NAME == "bilibili"
-        assert BilibiliCrawler.PLATFORM_DISPLAY_NAME == "哔哩哔哩漫画"
+        assert BilibiliCrawler.PLATFORM_DISPLAY_NAME == "哔哩哔哩漫画/动漫"
 
 
 class TestBilibiliURLParsing:

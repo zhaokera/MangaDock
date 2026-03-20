@@ -1,10 +1,11 @@
 """
-哔哩哔哩漫画 (manga.bilibili.com) 爬虫
+哔哩哔哩漫画/动漫 (manga.bilibili.com /(video.bilibili.com)) 爬虫
 
-哔哩哔哩漫画网站特点：
-- URL 格式: https://manga.bilibili.com/m/detail/{comic_id}
+哔哩哔哩平台特点：
+- 漫画 URL 格式: https://manga.bilibili.com/m/detail/{comic_id}
+- 动漫 URL 格式: https://www.bilibili.com/bilibili/video/{bv_id}
 - 需要处理反爬机制
-- 图片访问需要特定的 headers 和 tokens
+- 图片/视频访问需要特定的 headers 和 tokens
 """
 
 import re
@@ -25,6 +26,12 @@ import config
 _COMIC_ID_PATTERN = re.compile(r'/detail/(\d+)')
 _BILIBILI_API = re.compile(r'window\.__INITIAL_STATE__\s*=\s*(\{[^<]+\})')
 _IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
+# BV号/AV号模式
+_BV_ID_PATTERN = re.compile(r'[Bb][Vv][Aa]?[1-9A-HJ-NP-Za-km-z]{10}')
+_AV_ID_PATTERN = re.compile(r'av(\d+)')
+# 动漫视频 API
+_BILIBILI_VIDEO_API = "https://api.bilibili.com/x/web-interface/view"
+_BILIBILI_PLAY_URL = "https://www.bilibili.com/video/"
 
 # 默认等待配置
 _BILIBILI_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
@@ -85,30 +92,55 @@ async def wait_for_element(page, selector: str, timeout: float = _BILIBILI_MAX_W
 
 @register_crawler
 class BilibiliCrawler(BaseCrawler):
-    """哔哩哔哩漫画爬虫"""
+    """哔哩哔哩漫画/动漫爬虫"""
 
     PLATFORM_NAME = "bilibili"
-    PLATFORM_DISPLAY_NAME = "哔哩哔哩漫画"
+    PLATFORM_DISPLAY_NAME = "哔哩哔哩漫画/动漫"
     URL_PATTERNS = [
         r"manga\.bilibili\.com/m/detail/\d+",
         r"www\.manga.bilibili\.com/m/detail/\d+",
+        r"bilibili\.com/bilibili/video/[Bb][Vv]",
+        r"bilibili\.com/video/[Bb][Vv]",
+        r"www\.bilibili\.com/video/[Bb][Vv]",
     ]
 
     # B站 manga API 基础URL
     BASE_API = "https://manga.bilibili.com"
+    # B站视频 API
+    VIDEO_API = "https://api.bilibili.com/x/web-interface/view"
 
     def _extract_ids(self, url: str) -> tuple:
-        """从 URL 提取 comic_id"""
+        """从 URL 提取 comic_id 或 video_id"""
+        # 尝试提取漫画 ID
         comic_match = _COMIC_ID_PATTERN.search(url)
         if comic_match:
             return int(comic_match.group(1)), None
+
+        # 尝试提取 BV 号
+        bv_match = _BV_ID_PATTERN.search(url)
+        if bv_match:
+            return None, bv_match.group(0)
+
+        # 尝试提取 AV 号
+        av_match = _AV_ID_PATTERN.search(url)
+        if av_match:
+            return int(av_match.group(1)), None
+
         return None, None
 
+    def _is_video_url(self, url: str) -> bool:
+        """判断是否为视频 URL"""
+        return bool(_BV_ID_PATTERN.search(url) or _AV_ID_PATTERN.search(url))
+
     async def get_info(self, url: str) -> MangaInfo:
-        """获取漫画信息"""
+        """获取漫画或动漫信息"""
+        # 检查是否为视频 URL
+        if self._is_video_url(url):
+            return await self._get_video_info(url)
+
         comic_id, _ = self._extract_ids(url)
         if not comic_id:
-            raise ValueError("无效的哔哩哔哩漫画 URL")
+            raise ValueError("无效的哔哩哔哩 URL")
 
         await self.start_browser(headless=True)
 
@@ -159,8 +191,38 @@ class BilibiliCrawler(BaseCrawler):
         finally:
             await self.close_browser()
 
+    async def _get_video_info(self, url: str) -> MangaInfo:
+        """获取视频信息"""
+        import httpx
+
+        video_id = self._extract_ids(url)[1]
+        if not video_id:
+            raise ValueError("无效的视频 URL")
+
+        async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+            resp = await client.get(f"{self.VIDEO_API}?bvid={video_id}")
+            data = resp.json()
+
+            if data.get('code') != 0:
+                raise ValueError(f"获取视频信息失败: {data.get('message')}")
+
+            view = data.get('data', {})
+            return MangaInfo(
+                title=view.get('title', ''),
+                chapter=view.get('tname', ''),
+                page_count=1,
+                platform=self.PLATFORM_NAME,
+                comic_id=video_id,
+                episode_id="1",
+                extra={"video_info": view}
+            )
+
     async def get_image_urls(self, url: str) -> List[str]:
-        """提取图片URL列表"""
+        """提取图片URL列表或视频播放地址"""
+        # 如果是视频URL，返回空列表（视频下载单独处理）
+        if self._is_video_url(url):
+            return []
+
         page_content = await self.page.content()
         image_urls = _IMG_PATTERN.findall(page_content)
         image_urls = [url for url in image_urls if '/images/' in url or '.jpg' in url or '.png' in url or '.webp' in url]
@@ -186,6 +248,40 @@ class BilibiliCrawler(BaseCrawler):
         logger.info(f"找到 {total} 张图片")
         return image_urls
 
+    async def get_video_urls(self, url: str) -> List[str]:
+        """获取视频播放地址"""
+        if not self._is_video_url(url):
+            return []
+
+        import httpx
+        import re
+
+        video_id = self._extract_ids(url)[1]
+        if not video_id:
+            raise ValueError("无效的视频 URL")
+
+        async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+            resp = await client.get(f"{self.VIDEO_API}?bvid={video_id}")
+            data = resp.json()
+
+            if data.get('code') != 0:
+                raise ValueError(f"获取视频信息失败: {data.get('message')}")
+
+            view = data.get('data', {})
+            cid = view.get('cid')
+
+            # 获取播放地址
+            play_url = f"https://api.bilibili.com/x/player/wbi/playurl?bvid={video_id}&cid={cid}"
+            resp2 = await client.get(play_url)
+            play_data = resp2.json()
+
+            if play_data.get('code') != 0:
+                raise ValueError(f"获取播放地址失败: {play_data.get('message')}")
+
+            # 获取视频质量
+            durls = play_data.get('data', {}).get('durl', [])
+            return [d.get('url') for d in durls if d.get('url')]
+
     async def download(
         self,
         url: str,
@@ -193,16 +289,20 @@ class BilibiliCrawler(BaseCrawler):
         progress_callback: Optional[ProgressCallback] = None
     ) -> str:
         """
-        下载哔哩哔哩漫画
+        下载哔哩哔哩漫画或动漫视频
 
         Args:
-            url: 漫画章节 URL
+            url: 漫画章节或视频 URL
             output_dir: 输出目录
             progress_callback: 进度回调
 
         Returns:
             str: 保存目录路径
         """
+        # 判断是视频还是漫画
+        if self._is_video_url(url):
+            return await self._download_video(url, output_dir, progress_callback)
+
         comic_id, _ = self._extract_ids(url)
         if not comic_id:
             raise ValueError("无效的 URL 格式")
@@ -214,3 +314,82 @@ class BilibiliCrawler(BaseCrawler):
             return await self._download_sequential(url, output_dir, progress_callback, max_retries=3)
         finally:
             await self.close_browser()
+
+    async def _download_video(self, url: str, output_dir: str, progress_callback: Optional[ProgressCallback] = None) -> str:
+        """
+        下载哔哩哔哩视频
+
+        Args:
+            url: 视频 URL
+            output_dir: 输出目录
+            progress_callback: 进度回调
+
+        Returns:
+            str: 保存目录路径
+        """
+        import httpx
+        from pathlib import Path
+
+        video_id = self._extract_ids(url)[1]
+        if not video_id:
+            raise ValueError("无效的视频 URL")
+
+        await self.start_browser(headless=True)
+
+        try:
+            # 获取视频信息
+            async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+                resp = await client.get(f"{self.VIDEO_API}?bvid={video_id}")
+                data = resp.json()
+
+                if data.get('code') != 0:
+                    raise ValueError(f"获取视频信息失败: {data.get('message')}")
+
+                view = data.get('data', {})
+                title = view.get('title', 'video')
+                cid = view.get('cid')
+
+            # 获取播放地址
+            play_url = f"https://api.bilibili.com/x/player/wbi/playurl?bvid={video_id}&cid={cid}"
+            async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+                resp2 = await client.get(play_url)
+                play_data = resp2.json()
+
+                if play_data.get('code') != 0:
+                    raise ValueError(f"获取播放地址失败: {play_data.get('message')}")
+
+                durls = play_data.get('data', {}).get('durl', [])
+                if not durls:
+                    raise ValueError("未找到视频播放地址")
+
+                video_url = durls[0].get('url')
+                size = durls[0].get('size', 0)
+
+            # 下载视频
+            save_dir = Path(output_dir) / f"{title}_{video_id}"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            output_file = save_dir / f"{title}.mp4"
+
+            async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
+                resp3 = await client.get(video_url)
+                resp3.raise_for_status()
+
+                with open(output_file, 'wb') as f:
+                    f.write(resp3.content)
+
+            logger.info(f"视频已下载到: {output_file}")
+
+            if progress_callback:
+                await progress_callback(DownloadProgress(
+                    current=1,
+                    total=1,
+                    message="下载完成",
+                    status="completed"
+                ))
+
+            return str(save_dir)
+
+        finally:
+            await self.close_browser()
+
