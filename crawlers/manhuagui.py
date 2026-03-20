@@ -8,14 +8,20 @@
 """
 
 import re
-import asyncio
-import time
 import logging
 from typing import Optional, List, Dict, Callable
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
+from .utils import (
+    wait_for_page_ready,
+    wait_for_element,
+    wait_for_navigation,
+    extract_comic_id,
+    extract_episode_id,
+    get_image_extension,
+)
 import config
 
 # 模块级日志记录器
@@ -34,85 +40,6 @@ _IMG_SERVER_PATTERN = re.compile(r'https?://[^.]+\.hamreus\.com')
 _MANHUAGUI_BASE_URL = "https://www.manhuagui.com"
 _MANHUAGUI_LOGIN_URL = "https://www.manhuagui.com/login"
 _MANHUAGUI_LOGOUT_URL = "https://www.manhuagui.com/logout"
-
-# 默认等待配置
-_DEFAULT_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
-_DEFAULT_MEDIUM_WAIT = 1.0  # 中等优先级等待 (1秒)
-_DEFAULT_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
-_DEFAULT_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
-_DEFAULT_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
-
-
-# ============== 智能等待辅助函数 ==============
-
-async def wait_for_page_ready(page, max_wait: float = _DEFAULT_MAX_WAIT, check_interval: float = _DEFAULT_CHECK_INTERVAL) -> bool:
-    """
-    智能等待页面就绪，检查关键元素是否存在
-
-    Args:
-        page: Playwright page 对象
-        max_wait: 最大等待时间
-        check_interval: 检查间隔
-
-    Returns:
-        bool: 页面是否就绪
-    """
-    start_time = time.time()
-    while time.time() - start_time < max_wait:
-        # 检查页面是否加载完成
-        ready = await page.evaluate('''() => {
-            return document.readyState === 'complete' ||
-                   document.readyState === 'interactive';
-        }''')
-        if ready:
-            return True
-        await asyncio.sleep(check_interval)
-    return True  # 超时也返回 True（后续操作会处理）
-
-
-async def wait_for_element(page, selector: str, timeout: float = _DEFAULT_MAX_WAIT) -> bool:
-    """
-    等待元素出现
-
-    Args:
-        page: Playwright page 对象
-        selector: CSS 选择器
-        timeout: 超时时间
-
-    Returns:
-        bool: 元素是否存在
-    """
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        exists = await page.evaluate(f'''() => {{
-            return !!document.querySelector('{selector}');
-        }}''')
-        if exists:
-            return True
-        await asyncio.sleep(_DEFAULT_CHECK_INTERVAL)
-    return False
-
-
-async def wait_for_navigation(page, timeout: float = _DEFAULT_MAX_WAIT) -> bool:
-    """
-    等待页面导航完成
-
-    Args:
-        page: Playwright page 对象
-        timeout: 超时时间
-
-    Returns:
-        bool: 导航是否完成
-    """
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        ready = await page.evaluate('''() => {
-            return document.readyState === 'complete';
-        }''')
-        if ready:
-            return True
-        await asyncio.sleep(_DEFAULT_CHECK_INTERVAL)
-    return True
 
 
 # LZString 解密实现 - 使用正确的算法
@@ -1479,41 +1406,6 @@ class ManhuaguiCrawler(BaseCrawler):
             logger.debug("[DEBUG] 无图片下载")
 
         return str(save_dir)
-
-    async def _wait_for_page_ready(self, max_wait: float = 5.0, check_interval: float = 0.2) -> bool:
-        """
-        动态等待页面准备就绪
-        检查页面上的关键元素是否存在，而不是固定等待
-
-        Args:
-            max_wait: 最大等待时间（秒）
-            check_interval: 检查间隔（秒）
-
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            import time
-            start_time = time.time()
-            while time.time() - start_time < max_wait:
-                # 检查关键元素是否存在
-                elements_exist = await self.page.evaluate('''
-                    () => {
-                        // 检查 SMH 对象或页面关键元素是否存在
-                        return typeof SMH !== 'undefined' ||
-                               document.querySelector('h1') !== null ||
-                               document.querySelector('.book-title') !== null;
-                    }
-                ''')
-                if elements_exist:
-                    return True
-                await asyncio.sleep(check_interval)
-            # 超时也继续，避免阻塞
-            return True
-        except Exception as e:
-            logger.debug(f" 动态等待页面就绪异常: {e}")
-            # 出错时也继续，避免阻塞
-            return True
 
     async def _download_with_fastest_strategy(self, coroutines: list) -> bool:
         """

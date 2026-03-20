@@ -8,80 +8,24 @@
 """
 
 import re
-import asyncio
-import time
+import logging
 from typing import Optional, List
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
+from .utils import wait_for_page_ready, wait_for_element, extract_comic_id, extract_episode_id
 import config
 
+logger = logging.getLogger(__name__)
 
 # ============== 模块级常量 ==============
 
 # 模块级预编译正则表达式
 _IMG_PATTERN = re.compile(r'https?://[^"\'>\s]+\.(?:jpg|jpeg|png|webp|gif)')
 _COMIC_ID_PATTERN = re.compile(r'/comic/(\d+)')
-_EPISODE_ID_PATTERN = re.compile(r'/comic/\d+/(\d+)')
 _SK_PATTERN = re.compile(r'"sk"\s*:\s*["\']?([a-zA-Z0-9+/=]{20,})["\']?')
 _MH_SERVER_PATTERN = re.compile(r'https?://[^.]+\.mh1234\.com')
-
-# 默认等待配置
-_MH1234_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
-_MH1234_MEDIUM_WAIT = 1.0  # 中等优先级等待 (1秒)
-_MH1234_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
-_MH1234_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
-_MH1234_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
-
-
-# ============== 智能等待辅助函数 ==============
-
-async def wait_for_page_ready(page, max_wait: float = _MH1234_MAX_WAIT, check_interval: float = _MH1234_CHECK_INTERVAL) -> bool:
-    """
-    智能等待页面就绪，检查关键元素是否存在
-
-    Args:
-        page: Playwright page 对象
-        max_wait: 最大等待时间
-        check_interval: 检查间隔
-
-    Returns:
-        bool: 页面是否就绪
-    """
-    start_time = time.time()
-    while time.time() - start_time < max_wait:
-        ready = await page.evaluate('''() => {
-            return document.readyState === 'complete' ||
-                   document.readyState === 'interactive';
-        }''')
-        if ready:
-            return True
-        await asyncio.sleep(check_interval)
-    return True  # 超时也返回 True（后续操作会处理）
-
-
-async def wait_for_element(page, selector: str, timeout: float = _MH1234_MAX_WAIT) -> bool:
-    """
-    等待元素出现
-
-    Args:
-        page: Playwright page 对象
-        selector: CSS 选择器
-        timeout: 超时时间
-
-    Returns:
-        bool: 元素是否存在
-    """
-    start_time = time.time()
-    while time.time() - start_time < timeout:
-        exists = await page.evaluate(f'''() => {{
-            return !!document.querySelector('{selector}');
-        }}''')
-        if exists:
-            return True
-        await asyncio.sleep(_MH1234_CHECK_INTERVAL)
-    return False
 
 
 @register_crawler
@@ -97,10 +41,13 @@ class Mh1234Crawler(BaseCrawler):
 
     def _extract_ids(self, url: str) -> tuple:
         """从 URL 提取 comic_id 和 episode_id"""
-        comic_match = _COMIC_ID_PATTERN.search(url)
-        episode_match = _EPISODE_ID_PATTERN.search(url)
-        if comic_match and episode_match:
-            return int(comic_match.group(1)), int(episode_match.group(1))
+        comic_id = extract_comic_id(url)
+        episode_id = extract_episode_id(url)
+        if comic_id and episode_id:
+            try:
+                return int(comic_id), int(episode_id)
+            except ValueError:
+                return int(comic_id), episode_id
         return None, None
 
     async def get_info(self, url: str) -> MangaInfo:
