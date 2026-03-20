@@ -54,6 +54,11 @@ from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 from crawlers.auth import get_auth_manager, AuthManager
 from crawlers.resume import get_resume_manager, ResumeInfo
 from crawlers.registry import get_crawler_by_platform
+from crawlers.search import search_all_platforms, get_searcher, SearchResult
+from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
+from crawlers.auth import get_auth_manager, AuthManager
+from crawlers.resume import get_resume_manager, ResumeInfo
+from crawlers.registry import get_crawler_by_platform
 
 # 导入配置管理
 import config
@@ -76,6 +81,18 @@ class PlatformInfo(BaseModel):
     name: str
     display_name: str
     patterns: list[str]
+
+
+class SearchRequest(BaseModel):
+    keyword: str
+    platform: Optional[str] = None  # 可选，指定平台
+    limit: int = 10
+
+
+class SearchResponse(BaseModel):
+    results: List[dict]
+    total: int
+    platform: Optional[str] = None
 
 
 class MangaInfoResponse(BaseModel):
@@ -603,6 +620,54 @@ async def parse_url(request: DownloadRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析失败: {e}")
+
+
+@app.post("/api/search")
+async def search_videos(request: SearchRequest, background_tasks: BackgroundTasks):
+    """搜索视频 - 支持按名称搜索各大视频平台"""
+    keyword = request.keyword
+    platform = request.platform
+    limit = request.limit
+
+    if not keyword:
+        raise HTTPException(status_code=400, detail="缺少 keyword 参数")
+
+    # 限制搜索结果数量
+    limit = min(max(limit, 1), 50)
+
+    async def run_search():
+        """后台搜索任务"""
+        if platform:
+            # 搜索特定平台
+            searcher = get_searcher(platform)
+            if searcher is None:
+                raise ValueError(f"不支持的平台: {platform}")
+            results = await searcher.search(keyword, limit=limit)
+        else:
+            # 搜索所有平台
+            results = await search_all_platforms(keyword, limit_per_platform=limit)
+
+        return results
+
+    try:
+        # 直接执行搜索（搜索是异步的但不耗时）
+        if platform:
+            searcher = get_searcher(platform)
+            if searcher is None:
+                raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
+            results = await searcher.search(keyword, limit=limit)
+        else:
+            results = await search_all_platforms(keyword, limit_per_platform=limit)
+
+        return {
+            "results": [r.to_dict() for r in results],
+            "total": len(results),
+            "platform": platform
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"搜索失败: {e}")
 
 
 @app.post("/api/download")
@@ -1209,7 +1274,71 @@ app.add_event_handler("shutdown", on_shutdown)
 # ============== 启动 ==============
 
 if __name__ == "__main__":
+    import argparse
     import uvicorn
+
+    parser = argparse.ArgumentParser(description="漫画下载器")
+    parser.add_argument("--search", "-s", help="搜索视频（按名称）")
+    parser.add_argument("--platform", "-p", help="搜索平台（tencent/iqiyi/youku/mango）")
+    parser.add_argument("--limit", "-l", type=int, default=10, help="搜索结果数量")
+    parser.add_argument("--download", "-d", help="下载视频（通过 URL）")
+    args = parser.parse_args()
+
+    # 搜索模式
+    if args.search:
+        async def run_search():
+            keyword = args.search
+            platform = args.platform
+            limit = args.limit
+
+            try:
+                if platform:
+                    searcher = get_searcher(platform)
+                    if searcher is None:
+                        print(f"错误: 不支持的平台: {platform}")
+                        print("支持的平台: tencent, iqiyi, youku, mango")
+                        return
+                    results = await searcher.search(keyword, limit=limit)
+                else:
+                    results = await search_all_platforms(keyword, limit_per_platform=limit)
+
+                if not results:
+                    print("未找到结果")
+                    return
+
+                print(f"\n找到 {len(results)} 个结果:")
+                for i, r in enumerate(results, 1):
+                    print(f"\n{i}. {r.title}")
+                    print(f"   平台: {r.platform_display}")
+                    print(f"   匹配度: {r.score:.1f}")
+                    print(f"   URL: {r.url}")
+
+            except Exception as e:
+                print(f"搜索失败: {e}")
+
+        asyncio.run(run_search())
+        exit(0)
+
+    # 下载模式
+    if args.download:
+        async def run_download():
+            url = args.download
+            try:
+                crawler = get_crawler(url)
+                info = await crawler.get_info(url)
+                print(f"准备下载: {info.title}")
+
+                # 执行下载
+                output = await crawler.download(url, str(DOWNLOADS_DIR))
+                print(f"下载完成: {output}")
+            except Exception as e:
+                print(f"下载失败: {e}")
+
+        asyncio.run(run_download())
+        exit(0)
+
+    # 启动服务模式
+    logger.info("启动漫画下载服务...")
 
     logger.info("启动漫画下载服务...")
     logger.info(f"API: http://{CONFIG.host}:{CONFIG.port}")
