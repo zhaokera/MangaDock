@@ -32,7 +32,12 @@ class TestBilibiliCrawler:
     def test_platform_name(self):
         """测试平台名称"""
         assert BilibiliCrawler.PLATFORM_NAME == "bilibili"
-        assert BilibiliCrawler.PLATFORM_DISPLAY_NAME == "哔哩哔哩漫画/动漫"
+        assert BilibiliCrawler.PLATFORM_DISPLAY_NAME == "哔哩哔哩漫画"
+
+    def test_is_video_url(self):
+        """测试 _is_video_url 始终返回 False (B站不支持视频下载)"""
+        crawler = BilibiliCrawler()
+        assert not crawler._is_video_url("https://www.bilibili.com/video/BV1MM4y1n7W5")
 
 
 class TestBilibiliURLParsing:

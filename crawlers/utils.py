@@ -15,21 +15,13 @@ DEFAULT_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
 DEFAULT_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
 DEFAULT_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
 
-# 视频网站平台名称
+# 视频网站平台名称 (B站视频已移除，仅保留漫画支持)
 VIDEO_PLATFORMS = {
     "tencent": "腾讯视频",
     "iqiyi": "爱奇艺",
     "youku": "优酷",
-    "mango": "芒果TV",
-    "bilibili_video": "B站视频"
+    "mango": "芒果TV"
 }
-
-# 默认等待配置
-DEFAULT_LOW_WAIT = 0.5  # 低优先级等待 (0.5秒)
-DEFAULT_MEDIUM_WAIT = 1.0  # 中等优先级等待 (1秒)
-DEFAULT_HIGH_WAIT = 2.0  # 高优先级等待 (2秒)
-DEFAULT_MAX_WAIT = 5.0  # 最大等待时间 (5秒)
-DEFAULT_CHECK_INTERVAL = 0.2  # 条件检查间隔 (0.2秒)
 
 
 async def wait_for_page_ready(page, max_wait: float = DEFAULT_MAX_WAIT, check_interval: float = DEFAULT_CHECK_INTERVAL) -> bool:
