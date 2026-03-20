@@ -1,9 +1,9 @@
 """
-哔哩哔哩漫画/动漫 (manga.bilibili.com /(video.bilibili.com)) 爬虫
+哔哩哔哩漫画/动漫 (manga.bilibili.com / video.bilibili.com) 爬虫
 
 哔哩哔哩平台特点：
 - 漫画 URL 格式: https://manga.bilibili.com/m/detail/{comic_id}
-- 动漫 URL 格式: https://www.bilibili.com/bilibili/video/{bv_id}
+- 动漫 URL 格式: https://www.bilibili.com/video/{bv_id}
 - 需要处理反爬机制
 - 图片/视频访问需要特定的 headers 和 tokens
 """
@@ -12,12 +12,15 @@ import re
 import asyncio
 import time
 import hashlib
+import logging
 from typing import Optional, List
 from pathlib import Path
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
 import config
+
+logger = logging.getLogger(__name__)
 
 
 # ============== 模块级常量 ==============
