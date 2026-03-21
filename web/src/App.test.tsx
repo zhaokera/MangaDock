@@ -55,7 +55,7 @@ it('redirects / to /manga and renders the manga page navigation state', async ()
   renderWithRouter(<App />, ['/']);
 
   expect(await screen.findByRole('link', { name: '漫画下载' })).toHaveAttribute('aria-current', 'page');
-  expect(screen.getByText('粘贴漫画章节链接')).toBeInTheDocument();
+  expect(screen.getByText('先搜索漫画章节，或直接粘贴章节链接下载')).toBeInTheDocument();
 });
 
 it('navigates from manga to video and swaps page-specific hero text', async () => {

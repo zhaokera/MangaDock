@@ -65,3 +65,16 @@ it('disables result actions while the page is loading chapter details', async ()
 
   expect(onSelect).not.toHaveBeenCalled();
 });
+
+it('renders an explicit error state instead of the empty-results copy', () => {
+  render(
+    <MangaSearchResults
+      results={[]}
+      errorMessage="漫画搜索失败"
+      onSelect={vi.fn()}
+    />,
+  );
+
+  expect(screen.getByText('漫画搜索失败')).toBeInTheDocument();
+  expect(screen.queryByText('未找到相关结果')).not.toBeInTheDocument();
+});

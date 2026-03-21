@@ -5,6 +5,7 @@ interface MangaSearchResultsProps {
   results: MangaSearchResult[];
   loading?: boolean;
   disabled?: boolean;
+  errorMessage?: string | null;
   onSelect: (result: MangaSearchResult) => void;
   actionLabel?: string | ((result: MangaSearchResult) => string);
 }
@@ -13,6 +14,7 @@ const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({
   results,
   loading = false,
   disabled = false,
+  errorMessage = null,
   onSelect,
   actionLabel,
 }) => {
@@ -26,6 +28,10 @@ const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({
 
   if (loading) {
     return <div>正在搜索...</div>;
+  }
+
+  if (errorMessage) {
+    return <div>{errorMessage}</div>;
   }
 
   if (results.length === 0) {

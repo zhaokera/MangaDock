@@ -42,6 +42,7 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
   const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
   const [searchAttempted, setSearchAttempted] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<MangaSearchResult[]>([]);
   const [chapterLoading, setChapterLoading] = useState(false);
   const [chapterCatalog, setChapterCatalog] = useState<MangaChapterCatalog | null>(null);
@@ -49,6 +50,8 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmPending, setConfirmPending] = useState(false);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const searchRequestIdRef = useRef(0);
+  const chapterRequestIdRef = useRef(0);
 
   useEffect(() => {
     getPlatforms()
@@ -69,23 +72,44 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
   }, []);
 
   const handleSearch = useCallback(async (keyword: string, platform: string) => {
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
+    chapterRequestIdRef.current += 1;
+
     try {
       setSearchAttempted(true);
       setSearchLoading(true);
+      setSearchError(null);
       setSearchResults([]);
       resetChapterFlow();
 
       const result = await searchManga(keyword, platform);
+
+      if (searchRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setSearchResults(result.results || []);
     } catch (error) {
+      if (searchRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      const message = error instanceof Error ? error.message : '漫画搜索失败';
       console.error('漫画搜索失败', error);
-      alert(error instanceof Error ? error.message : '漫画搜索失败');
+      setSearchError(message);
+      alert(message);
     } finally {
-      setSearchLoading(false);
+      if (searchRequestIdRef.current === requestId) {
+        setSearchLoading(false);
+      }
     }
   }, [resetChapterFlow]);
 
   const handleSelectSearchResult = useCallback(async (result: MangaSearchResult) => {
+    const requestId = chapterRequestIdRef.current + 1;
+    chapterRequestIdRef.current = requestId;
+
     try {
       setChapterLoading(true);
       setChapterCatalog(null);
@@ -94,12 +118,23 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
       setConfirmPending(false);
 
       const catalog = await getMangaChapters(result.url, result.platform);
+
+      if (chapterRequestIdRef.current !== requestId) {
+        return;
+      }
+
       setChapterCatalog(catalog);
     } catch (error) {
+      if (chapterRequestIdRef.current !== requestId) {
+        return;
+      }
+
       console.error('获取漫画章节失败', error);
       alert(error instanceof Error ? error.message : '获取章节失败');
     } finally {
-      setChapterLoading(false);
+      if (chapterRequestIdRef.current === requestId) {
+        setChapterLoading(false);
+      }
     }
   }, []);
 
@@ -243,13 +278,18 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
           </div>
           <h2 className="font-bold text-gray-800">搜索漫画</h2>
         </div>
-        <MangaSearchInput platforms={platforms} loading={searchLoading || downloading} onSearch={handleSearch} />
+        <MangaSearchInput
+          platforms={platforms}
+          loading={searchLoading || chapterLoading || downloading}
+          onSearch={handleSearch}
+        />
 
         {searchAttempted && (
           <div className="mt-5">
             <MangaSearchResults
               results={searchResults}
               loading={searchLoading}
+              errorMessage={searchError}
               disabled={chapterLoading || downloading}
               onSelect={handleSelectSearchResult}
               actionLabel={(result) => `查看章节 ${result.title}`}
