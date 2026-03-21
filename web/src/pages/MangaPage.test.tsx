@@ -8,12 +8,16 @@ const {
   getPlatformsMock,
   getHistoryMock,
   getDownloadUrlMock,
+  searchMangaMock,
+  getMangaChaptersMock,
   startBatchDownloadMock,
   subscribeProgressMock,
 } = vi.hoisted(() => ({
   getPlatformsMock: vi.fn(),
   getHistoryMock: vi.fn(),
   getDownloadUrlMock: vi.fn((taskId: string) => `/api/files/${taskId}`),
+  searchMangaMock: vi.fn(),
+  getMangaChaptersMock: vi.fn(),
   startBatchDownloadMock: vi.fn(),
   subscribeProgressMock: vi.fn(),
 }));
@@ -26,9 +30,53 @@ vi.mock('../api/client', async () => {
     getPlatforms: getPlatformsMock,
     getHistory: getHistoryMock,
     getDownloadUrl: getDownloadUrlMock,
+    searchManga: searchMangaMock,
+    getMangaChapters: getMangaChaptersMock,
     startBatchDownload: startBatchDownloadMock,
     subscribeProgress: subscribeProgressMock,
   };
+});
+
+it('searches manga, opens chapters inline, waits for confirmation, then submits selected chapter urls', async () => {
+  const user = userEvent.setup();
+
+  searchMangaMock.mockResolvedValue({
+    results: [
+      {
+        title: '海贼王',
+        url: 'https://www.manhuagui.com/comic/1/',
+        platform: 'manhuagui',
+        platform_display: '漫画柜',
+      },
+    ],
+    total: 1,
+    platform: 'manhuagui',
+  });
+
+  getMangaChaptersMock.mockResolvedValue({
+    title: '海贼王',
+    platform: 'manhuagui',
+    platform_display: '漫画柜',
+    url: 'https://www.manhuagui.com/comic/1/',
+    chapters: [
+      { title: '第1话', url: 'https://www.manhuagui.com/comic/1/100.html' },
+      { title: '第2话', url: 'https://www.manhuagui.com/comic/1/101.html' },
+    ],
+  });
+
+  render(<MangaPage platforms={mangaPlatforms} />);
+
+  await user.type(screen.getByPlaceholderText('输入漫画名称...'), '海贼王');
+  await user.click(screen.getByRole('button', { name: '搜索' }));
+  await user.click(await screen.findByRole('button', { name: '查看章节 海贼王' }));
+  await user.click(await screen.findByLabelText('选择章节 第1话'));
+  await user.click(screen.getByRole('button', { name: '下载所选章节' }));
+
+  expect(startBatchDownloadMock).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: '确认下载 1 个章节' }));
+
+  expect(startBatchDownloadMock).toHaveBeenCalledWith(['https://www.manhuagui.com/comic/1/100.html']);
 });
 
 const mangaPlatforms = [

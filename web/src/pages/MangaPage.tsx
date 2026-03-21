@@ -1,6 +1,21 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { getPlatforms, type Platform, type TaskStatus, startBatchDownload, startDownload, subscribeProgress } from '../api/client';
+import {
+  getMangaChapters,
+  getPlatforms,
+  searchManga,
+  startBatchDownload,
+  startDownload,
+  subscribeProgress,
+  type MangaChapterCatalog,
+  type MangaSearchResult,
+  type Platform,
+  type TaskStatus,
+} from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
+import MangaChapterPicker from '../components/MangaChapterPicker';
+import MangaDownloadConfirm from '../components/MangaDownloadConfirm';
+import MangaSearchInput from '../components/MangaSearchInput';
+import MangaSearchResults from '../components/MangaSearchResults';
 import History from '../components/History';
 import UrlInput from '../components/UrlInput';
 
@@ -25,6 +40,14 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
   const [downloading, setDownloading] = useState(false);
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
   const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
+  const [searchAttempted, setSearchAttempted] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchResults, setSearchResults] = useState<MangaSearchResult[]>([]);
+  const [chapterLoading, setChapterLoading] = useState(false);
+  const [chapterCatalog, setChapterCatalog] = useState<MangaChapterCatalog | null>(null);
+  const [selectedChapterUrls, setSelectedChapterUrls] = useState<string[]>([]);
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [confirmPending, setConfirmPending] = useState(false);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -36,6 +59,75 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
       unsubscribeRef.current?.();
     };
   }, []);
+
+  const resetChapterFlow = useCallback(() => {
+    setChapterLoading(false);
+    setChapterCatalog(null);
+    setSelectedChapterUrls([]);
+    setConfirmOpen(false);
+    setConfirmPending(false);
+  }, []);
+
+  const handleSearch = useCallback(async (keyword: string, platform: string) => {
+    try {
+      setSearchAttempted(true);
+      setSearchLoading(true);
+      setSearchResults([]);
+      resetChapterFlow();
+
+      const result = await searchManga(keyword, platform);
+      setSearchResults(result.results || []);
+    } catch (error) {
+      console.error('漫画搜索失败', error);
+      alert(error instanceof Error ? error.message : '漫画搜索失败');
+    } finally {
+      setSearchLoading(false);
+    }
+  }, [resetChapterFlow]);
+
+  const handleSelectSearchResult = useCallback(async (result: MangaSearchResult) => {
+    try {
+      setChapterLoading(true);
+      setChapterCatalog(null);
+      setSelectedChapterUrls([]);
+      setConfirmOpen(false);
+      setConfirmPending(false);
+
+      const catalog = await getMangaChapters(result.url, result.platform);
+      setChapterCatalog(catalog);
+    } catch (error) {
+      console.error('获取漫画章节失败', error);
+      alert(error instanceof Error ? error.message : '获取章节失败');
+    } finally {
+      setChapterLoading(false);
+    }
+  }, []);
+
+  const handleToggleChapter = useCallback((url: string) => {
+    setSelectedChapterUrls((current) => (
+      current.includes(url)
+        ? current.filter((item) => item !== url)
+        : [...current, url]
+    ));
+  }, []);
+
+  const handleSelectAllChapters = useCallback(() => {
+    setSelectedChapterUrls(chapterCatalog?.chapters.map((chapter) => chapter.url) || []);
+  }, [chapterCatalog]);
+
+  const handleClearAllChapters = useCallback(() => {
+    setSelectedChapterUrls([]);
+  }, []);
+
+  const handleOpenConfirm = useCallback(() => {
+    if (selectedChapterUrls.length === 0) {
+      return;
+    }
+
+    setConfirmOpen(true);
+  }, [selectedChapterUrls.length]);
+
+  const selectedChapters = chapterCatalog?.chapters.filter((chapter) => selectedChapterUrls.includes(chapter.url)) || [];
 
   const handleBatchDownload = useCallback(async (urls: string[]) => {
     try {
@@ -72,6 +164,21 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
     }
   }, []);
 
+  const handleConfirmDownload = useCallback(async () => {
+    if (selectedChapterUrls.length === 0) {
+      return;
+    }
+
+    setConfirmPending(true);
+    setConfirmOpen(false);
+
+    try {
+      await handleBatchDownload(selectedChapterUrls);
+    } finally {
+      setConfirmPending(false);
+    }
+  }, [handleBatchDownload, selectedChapterUrls]);
+
   const handleDownload = useCallback(async (url: string) => {
     try {
       setDownloading(true);
@@ -100,7 +207,7 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
           <span className="gradient-text">一键下载</span>
           <span className="text-gray-700"> 喜爱的漫画</span>
         </h2>
-        <p className="text-gray-400">粘贴漫画章节链接</p>
+        <p className="text-gray-400">先搜索漫画章节，或直接粘贴章节链接下载</p>
       </section>
 
       {platforms.length > 0 && (
@@ -121,6 +228,81 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
           })}
         </section>
       )}
+
+      <section className="glass-card rounded-3xl p-6 animate-[fadeIn_0.3s_ease]">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center">
+            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+              />
+            </svg>
+          </div>
+          <h2 className="font-bold text-gray-800">搜索漫画</h2>
+        </div>
+        <MangaSearchInput platforms={platforms} loading={searchLoading || downloading} onSearch={handleSearch} />
+
+        {searchAttempted && (
+          <div className="mt-5">
+            <MangaSearchResults
+              results={searchResults}
+              loading={searchLoading}
+              onSelect={handleSelectSearchResult}
+              actionLabel={(result) => `查看章节 ${result.title}`}
+            />
+          </div>
+        )}
+
+        {chapterLoading && (
+          <div className="mt-5 text-sm text-gray-500">
+            正在获取章节...
+          </div>
+        )}
+
+        {chapterCatalog && !chapterLoading && !confirmOpen && (
+          <div className="mt-5 space-y-4">
+            <div className="rounded-2xl border border-gray-100 p-4">
+              <div className="mb-4">
+                <h3 className="text-lg font-semibold text-gray-800">{chapterCatalog.title}</h3>
+                <p className="text-sm text-gray-500">{chapterCatalog.platform_display}</p>
+              </div>
+              <MangaChapterPicker
+                chapters={chapterCatalog.chapters}
+                selectedUrls={selectedChapterUrls}
+                onToggleChapter={handleToggleChapter}
+                onSelectAll={handleSelectAllChapters}
+                onClearAll={handleClearAllChapters}
+                chapterLabelPrefix="选择章节"
+              />
+            </div>
+
+            <button
+              type="button"
+              onClick={handleOpenConfirm}
+              disabled={selectedChapterUrls.length === 0 || downloading}
+              className="rounded-2xl bg-primary px-5 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              下载所选章节
+            </button>
+          </div>
+        )}
+
+        {chapterCatalog && confirmOpen && !chapterLoading && (
+          <div className="mt-5">
+            <MangaDownloadConfirm
+              title={chapterCatalog.title}
+              platformDisplay={chapterCatalog.platform_display}
+              chapters={selectedChapters}
+              pending={confirmPending}
+              onConfirm={handleConfirmDownload}
+              onBack={() => setConfirmOpen(false)}
+            />
+          </div>
+        )}
+      </section>
 
       <section className="glass-card rounded-3xl p-6 animate-[fadeIn_0.3s_ease]">
         <div className="flex items-center gap-3 mb-4">
