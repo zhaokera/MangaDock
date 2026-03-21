@@ -9,9 +9,10 @@
 
 import re
 import logging
+from fractions import Fraction
 from typing import Optional, List, Dict, Callable
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
@@ -61,13 +62,64 @@ def normalize_manhuagui_comic_url(url: str) -> str:
     return normalized
 
 
+def is_manhuagui_chapter_url(url: str) -> bool:
+    """判断是否是漫画柜的章节页 URL。"""
+    if not url:
+        return False
+
+    normalized = urljoin(_MANHUAGUI_BASE_URL, url)
+    path = urlsplit(normalized).path
+    return bool(re.fullmatch(r"/comic/\d+/\d+\.html", path))
+
+
+def _extract_manhuagui_chapter_number(title: str) -> Optional[Fraction]:
+    normalized = re.sub(r"\s+", " ", (title or "").strip())
+    if not normalized:
+        return None
+
+    patterns = [
+        r"^第\s*(\d+(?:\.\d+)?)\s*(?:话|話|回|章|卷|节|節)?$",
+        r"^(\d+(?:\.\d+)?)\s*(?:话|話|回|章|卷|节|節)$",
+        r"^(?:chapter|ch\.?)\s*(\d+(?:\.\d+)?)$",
+        r"^(\d+(?:\.\d+)?)$",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if match:
+            try:
+                return Fraction(match.group(1))
+            except (ValueError, ZeroDivisionError):
+                continue
+
+    return None
+
+
+def _is_special_manhuagui_chapter(title: str) -> bool:
+    normalized = re.sub(r"\s+", " ", (title or "").strip())
+    if not normalized:
+        return False
+
+    return bool(
+        re.search(r"(番外|特别篇|特别|外传|外傳|后记|後記|附录|附錄|extra|side story)", normalized, re.IGNORECASE)
+    )
+
+
 def manhuagui_chapter_sort_key(title: str, url: str) -> tuple:
     """按章节标题或 URL 中的数字提取排序键。"""
-    text = f"{title or ''} {url or ''}"
-    match = re.search(r"(\d+)", text)
-    if match:
-        return int(match.group(1)), text
-    return 10**9, text
+    normalized_title = re.sub(r"\s+", " ", (title or "").strip())
+    chapter_number = _extract_manhuagui_chapter_number(normalized_title)
+
+    if chapter_number is not None:
+        return (0, chapter_number, normalized_title)
+
+    if re.search(r"(序章|前传|前傳|楔子|prologue|prelude)", normalized_title, re.IGNORECASE):
+        return (-1, Fraction(0), normalized_title)
+
+    if _is_special_manhuagui_chapter(normalized_title):
+        return (1, Fraction(0), normalized_title)
+
+    return (2, Fraction(0), normalized_title or (url or ""))
 
 
 # LZString 解密实现 - 使用正确的算法

@@ -7,7 +7,11 @@ from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional, Type
 from urllib.parse import quote, urljoin
 
-from .manhuagui import manhuagui_chapter_sort_key, normalize_manhuagui_comic_url
+from .manhuagui import (
+    is_manhuagui_chapter_url,
+    manhuagui_chapter_sort_key,
+    normalize_manhuagui_comic_url,
+)
 
 
 @dataclass
@@ -189,7 +193,7 @@ class ManhuaguiMangaSearcher(BaseMangaSearcher):
                 continue
 
             url = urljoin("https://www.manhuagui.com", href)
-            if "/comic/" not in url:
+            if not is_manhuagui_chapter_url(url):
                 continue
 
             title = self._normalize_text(anchor.get("title") or anchor.get("text"))
