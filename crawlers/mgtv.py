@@ -188,7 +188,7 @@ class MgtvCrawler(BaseCrawler):
             logger.info(f"视频已下载到: {output_file}")
 
             if progress_callback:
-                await progress_callback(DownloadProgress(
+                await self._emit_progress(progress_callback, DownloadProgress(
                     current=1,
                     total=1,
                     message="下载完成",

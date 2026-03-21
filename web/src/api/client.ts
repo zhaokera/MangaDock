@@ -1,3 +1,5 @@
+import { getContentTypeForPlatform, getPlatformsForContentType, type ContentType } from '../lib/contentType';
+
 const API_BASE = '/api';
 
 export interface Platform {
@@ -182,4 +184,62 @@ export function getDownloadUrl(taskId: string): string {
 export async function getHistory(): Promise<{ history: HistoryItem[] }> {
   const response = await fetch(`${API_BASE}/history`);
   return response.json();
+}
+
+// === 搜索 API ===
+
+export interface SearchPlatform {
+  name: string;
+  display_name: string;
+  type: ContentType;
+}
+
+export interface SearchResult {
+  title: string;
+  url: string;
+  platform: string;
+  platform_display: string;
+  score: number;
+  extra?: {
+    cover?: string;
+    duration?: string;
+    year?: string;
+    director?: string;
+    actor?: string;
+  };
+}
+
+// 搜索视频/漫画
+export async function searchVideos(keyword: string, platform?: string, limit: number = 10): Promise<{ results: SearchResult[]; total: number; platform?: string }> {
+  const response = await fetch(`${API_BASE}/search`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      keyword,
+      platform,
+      limit,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '搜索失败');
+  }
+
+  return response.json();
+}
+
+// 获取支持搜索的平台
+export async function getSearchPlatforms(): Promise<{ platforms: SearchPlatform[] }> {
+  // 从 API 获取平台列表，标记支持搜索的平台
+  const response = await fetch(`${API_BASE}/platforms`);
+  const data: { platforms?: Platform[] } = await response.json();
+  const platforms = getPlatformsForContentType(data.platforms || [], 'video').map((p): SearchPlatform => ({
+    ...p,
+    type: getContentTypeForPlatform(p.name)
+  }));
+
+  return { platforms };
 }

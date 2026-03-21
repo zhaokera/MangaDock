@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import inspect
 import logging
 import time
 from abc import ABC, abstractmethod
@@ -66,7 +67,7 @@ class DownloadProgress:
 
 
 # 进度回调类型
-ProgressCallback = Callable[[DownloadProgress], None]
+ProgressCallback = Callable[[DownloadProgress], Any]
 
 # 默认 User-Agent
 DEFAULT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -163,6 +164,19 @@ class BaseCrawler(ABC):
         if self.http_client:
             await self.http_client.aclose()
             self.http_client = None
+
+    async def _emit_progress(
+        self,
+        progress_callback: Optional[ProgressCallback],
+        progress: DownloadProgress,
+    ) -> None:
+        """兼容同步和异步进度回调。"""
+        if not progress_callback:
+            return
+
+        result = progress_callback(progress)
+        if inspect.isawaitable(result):
+            await result
 
     @classmethod
     def can_handle(cls, url: str) -> bool:

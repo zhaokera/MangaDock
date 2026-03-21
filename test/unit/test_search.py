@@ -1,5 +1,7 @@
 """测试搜索功能"""
 
+from unittest.mock import patch
+
 import pytest
 from crawlers.search import (
     SearchResult,
@@ -8,9 +10,12 @@ from crawlers.search import (
     IqiyiSearcher,
     YoukuSearcher,
     MgtvSearcher,
+    DlExpoSearcher,
     search_all_platforms,
     get_searcher,
 )
+from crawlers.tencent import TencentCrawler
+from crawlers.iqiyi import IqiyiCrawler
 
 
 class TestSearchResult:
@@ -76,6 +81,10 @@ class TestGetSearcher:
         """Test getting Mango searcher"""
         searcher = get_searcher("mango")
         assert isinstance(searcher, MgtvSearcher)
+
+    def test_get_searcher_returns_dl_expo_searcher(self):
+        searcher = get_searcher("dl_expo")
+        assert isinstance(searcher, DlExpoSearcher)
 
     def test_get_invalid_searcher(self):
         """Test getting invalid platform returns None"""
@@ -175,3 +184,142 @@ class TestSearchResultSorting:
         assert hasattr(result, 'platform_display')
         assert hasattr(result, 'score')
         assert hasattr(result, 'extra')
+
+
+class TestCandidateNormalization:
+    """Test candidate normalization for live search pages"""
+
+    def test_dl_expo_searcher_builds_results_from_maccms_candidates(self):
+        searcher = DlExpoSearcher()
+        candidates = [
+            {"title": "灌篮高手", "url": "/voddetail/101100.html"},
+            {"title": "灌篮高手", "url": "/play/101100/2-1.html"},
+        ]
+
+        results = searcher._build_results_from_candidates("灌篮高手", candidates, limit=10)
+
+        assert [result.platform for result in results] == ["dl_expo", "dl_expo"]
+        assert [result.url for result in results] == [
+            "https://www.dl-expo.com/voddetail/101100.html",
+            "https://www.dl-expo.com/play/101100/2-1.html",
+        ]
+
+    def test_dl_expo_searcher_keeps_absolute_urls_unchanged(self):
+        searcher = DlExpoSearcher()
+
+        results = searcher._build_results_from_candidates(
+            "灌篮高手",
+            [
+                {
+                    "title": "灌篮高手",
+                    "url": "https://www.dl-expo.com/voddetail/101100.html",
+                },
+            ],
+            limit=10,
+        )
+
+        assert [result.url for result in results] == [
+            "https://www.dl-expo.com/voddetail/101100.html",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_dl_expo_searcher_uses_anchor_fallback_when_card_candidates_are_empty(self):
+        class FakePage:
+            async def goto(self, *args, **kwargs):
+                return None
+
+            async def evaluate(self, script):
+                if "items.some((item) => item.title && item.url)" in script:
+                    return [{"title": "灌篮高手", "url": "/voddetail/101100.html"}]
+                return [{"title": "", "url": ""}]
+
+        class FakeBrowser:
+            def __init__(self, page):
+                self.page = page
+
+            async def new_page(self):
+                return self.page
+
+            async def close(self):
+                return None
+
+        class FakePlaywright:
+            def __init__(self, page):
+                self.chromium = self
+                self.page = page
+
+            async def launch(self, headless=True):
+                return FakeBrowser(self.page)
+
+        class FakeAsyncPlaywrightContext:
+            def __init__(self, page):
+                self.page = page
+
+            async def __aenter__(self):
+                return FakePlaywright(self.page)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        with patch(
+            "playwright.async_api.async_playwright",
+            return_value=FakeAsyncPlaywrightContext(FakePage()),
+        ):
+            results = await DlExpoSearcher().search("灌篮高手", limit=10)
+
+        assert [result.url for result in results] == [
+            "https://www.dl-expo.com/voddetail/101100.html",
+        ]
+
+    def test_tencent_candidates_can_build_cover_urls_from_cid(self):
+        """Tencent search pages now expose cid cards instead of direct hrefs"""
+        searcher = TencentSearcher()
+
+        results = searcher._build_results_from_candidates(
+            "海贼王",
+            [
+                {"title": "客服", "url": "", "cid": None},
+                {"title": "海贼王", "url": "", "cid": "mzc00200emmamia"},
+                {"title": "海贼王剧场版", "url": "", "cid": "mzc002006wc0rx0"},
+            ],
+            limit=10,
+        )
+
+        assert {result.title for result in results} == {"海贼王", "海贼王剧场版"}
+        assert {result.url for result in results} == {
+            "https://v.qq.com/x/cover/mzc00200emmamia.html",
+            "https://v.qq.com/x/cover/mzc002006wc0rx0.html",
+        }
+
+    def test_iqiyi_candidates_keep_redirect_urls_when_keyword_matches(self):
+        """Iqiyi search pages now expose tvg redirect links instead of old result selectors"""
+        searcher = IqiyiSearcher()
+
+        results = searcher._build_results_from_candidates(
+            "灌篮高手",
+            [
+                {"title": "客服中心", "url": "https://www.iqiyi.com/help", "cid": None},
+                {
+                    "title": "灌篮高手 普通话",
+                    "url": "https://www.iqiyi.com/tvg/to_page_url?album_id=MjAyOTE4MTAx",
+                    "cid": None,
+                },
+            ],
+            limit=10,
+        )
+
+        assert len(results) == 1
+        assert results[0].title == "灌篮高手 普通话"
+        assert results[0].url == "https://www.iqiyi.com/tvg/to_page_url?album_id=MjAyOTE4MTAx"
+
+
+class TestSearchResultUrlCompatibility:
+    """Test that search result URLs are accepted by download crawlers"""
+
+    def test_tencent_cover_urls_from_search_are_supported_by_crawler(self):
+        crawler = TencentCrawler()
+        assert crawler.can_handle("https://v.qq.com/x/cover/mzc00200emmamia.html")
+
+    def test_iqiyi_redirect_urls_from_search_are_supported_by_crawler(self):
+        crawler = IqiyiCrawler()
+        assert crawler.can_handle("https://www.iqiyi.com/tvg/to_page_url?album_id=MjAyOTE4MTAx")

@@ -18,7 +18,7 @@ from typing import Optional, List
 from dataclasses import dataclass, field, asdict
 
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks, Body
+    from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, StreamingResponse
     from pydantic import BaseModel
@@ -597,6 +597,12 @@ async def root():
 async def list_platforms():
     """获取支持的平台列表"""
     platforms = get_supported_platforms()
+
+    # 标记视频平台支持搜索
+    video_platforms = {'tencent', 'iqiyi', 'youku', 'mango', 'bilibili', 'dl_expo'}
+    for p in platforms:
+        p['type'] = 'video' if p['name'] in video_platforms else 'manga'
+
     return {"platforms": platforms}
 
 
@@ -622,35 +628,14 @@ async def parse_url(request: DownloadRequest):
         raise HTTPException(status_code=500, detail=f"解析失败: {e}")
 
 
-@app.post("/api/search")
-async def search_videos(request: SearchRequest, background_tasks: BackgroundTasks):
-    """搜索视频 - 支持按名称搜索各大视频平台"""
-    keyword = request.keyword
-    platform = request.platform
-    limit = request.limit
-
+async def _run_search(keyword: str, platform: Optional[str], limit: int) -> dict:
+    """执行搜索并统一返回格式。"""
     if not keyword:
         raise HTTPException(status_code=400, detail="缺少 keyword 参数")
 
-    # 限制搜索结果数量
     limit = min(max(limit, 1), 50)
 
-    async def run_search():
-        """后台搜索任务"""
-        if platform:
-            # 搜索特定平台
-            searcher = get_searcher(platform)
-            if searcher is None:
-                raise ValueError(f"不支持的平台: {platform}")
-            results = await searcher.search(keyword, limit=limit)
-        else:
-            # 搜索所有平台
-            results = await search_all_platforms(keyword, limit_per_platform=limit)
-
-        return results
-
     try:
-        # 直接执行搜索（搜索是异步的但不耗时）
         if platform:
             searcher = get_searcher(platform)
             if searcher is None:
@@ -662,12 +647,34 @@ async def search_videos(request: SearchRequest, background_tasks: BackgroundTask
         return {
             "results": [r.to_dict() for r in results],
             "total": len(results),
-            "platform": platform
+            "platform": platform,
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"搜索失败: {e}")
+
+
+@app.post("/api/search")
+async def search_videos(request: SearchRequest, background_tasks: BackgroundTasks):
+    """搜索视频 - 支持按名称搜索各大视频平台"""
+    return await _run_search(
+        keyword=request.keyword,
+        platform=request.platform,
+        limit=request.limit,
+    )
+
+
+@app.get("/api/search")
+async def search_videos_get(
+    keyword: str = Query(...),
+    platform: Optional[str] = Query(None),
+    limit: int = Query(10),
+):
+    """兼容前端 GET 请求的搜索接口。"""
+    return await _run_search(keyword=keyword, platform=platform, limit=limit)
 
 
 @app.post("/api/download")
@@ -684,6 +691,15 @@ async def start_download(request: DownloadRequest, background_tasks: BackgroundT
     # 创建任务
     task_id = str(uuid.uuid4())[:8]
     task = DownloadTask(task_id, url, platform=crawler.PLATFORM_NAME)
+    save_task(TaskRecord(
+        task_id=task.task_id,
+        url=task.url,
+        platform=task.platform,
+        status="pending",
+        message="任务已创建",
+        created_at=task.created_at.isoformat(),
+        updated_at=datetime.now().isoformat(),
+    ))
 
     # 后台执行下载
     downloader = MangaDownloader(task)
@@ -739,6 +755,15 @@ async def start_batch_download(request: BatchDownloadRequest, background_tasks: 
 
         task_id = str(uuid.uuid4())[:8]
         task = DownloadTask(task_id, info["url"], platform=info["platform"])
+        save_task(TaskRecord(
+            task_id=task.task_id,
+            url=task.url,
+            platform=task.platform,
+            status="pending",
+            message="任务已创建",
+            created_at=task.created_at.isoformat(),
+            updated_at=datetime.now().isoformat(),
+        ))
 
         downloader = MangaDownloader(task)
         background_tasks.add_task(downloader.run)
@@ -1363,8 +1388,8 @@ if __name__ == "__main__":
     logger.info(f"  - 浏览器空闲超时: {idle_timeout}s")
 
     # 启动配置监听器（热重载）
-    from crawlers import config as crawler_config
-    crawler_config.start_config_watcher(
+    import config as server_config
+    server_config.start_config_watcher(
         callback=lambda: logger.info("配置已热重载"),
         interval=5.0
     )

@@ -1,11 +1,17 @@
 import React, { useState, useRef } from 'react';
 import { Platform } from '../api/client';
+import { getContentTypeForPlatform, type ContentType } from '../lib/contentType';
 
 interface UrlInputProps {
+  contentType: ContentType;
   onDownload: (url: string) => void;
   onBatchDownload?: (urls: string[]) => void;
   disabled: boolean;
   platforms: Platform[];
+  allPlatforms: Platform[];
+  allowedPlatforms?: string[];
+  wrongPageMessage?: string;
+  exampleUrl?: string;
 }
 
 // 模块级预编译正则表达式 - 避免在每次 validateUrl 调用时重新编译
@@ -21,31 +27,98 @@ const getPlatformPattern = (pattern: string): RegExp => {
   return regex;
 };
 
-const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabled, platforms }) => {
+const UrlInput: React.FC<UrlInputProps> = ({
+  contentType,
+  onDownload,
+  onBatchDownload,
+  disabled,
+  platforms,
+  allPlatforms,
+  allowedPlatforms,
+  wrongPageMessage,
+  exampleUrl,
+}) => {
   const [url, setUrl] = useState('');
   const [error, setError] = useState('');
   const [focused, setFocused] = useState(false);
   const [isBatchMode, setIsBatchMode] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const validateUrl = (value: string): { valid: boolean; platform?: Platform } => {
-    if (!value.trim()) {
-      return { valid: false };
-    }
+  const currentTypeLabel = contentType === 'manga' ? '漫画' : '视频';
 
-    for (const platform of platforms) {
+  const getSwitchMessage = () =>
+    contentType === 'manga'
+      ? '当前是漫画下载页，请切换到视频下载'
+      : '当前是视频下载页，请切换到漫画下载';
+
+  const getWrongPageMessage = () => wrongPageMessage || getSwitchMessage();
+  const resolvedExampleUrl = exampleUrl || (
+    contentType === 'manga'
+      ? 'https://www.manhuagui.com/comic/58667/868543.html'
+      : 'https://v.qq.com/x/cover/abc/xyz.html'
+  );
+
+  const findMatchingPlatform = (value: string, candidatePlatforms: Platform[]): Platform | undefined => {
+    for (const platform of candidatePlatforms) {
       for (const pattern of platform.patterns) {
         try {
           const regex = getPlatformPattern(pattern);
           if (regex.test(value)) {
-            return { valid: true, platform };
+            return platform;
           }
         } catch {
           if (value.includes(pattern.replace(/\\/g, '').replace(/\./g, '.'))) {
-            return { valid: true, platform };
+            return platform;
           }
         }
       }
+    }
+
+    return undefined;
+  };
+
+  const getOppositePlatforms = () =>
+    allPlatforms.filter((candidate) => getContentTypeForPlatform(candidate.name) !== contentType);
+
+  const getSameTypeDisallowedPlatforms = () => {
+    if (!allowedPlatforms || allowedPlatforms.length === 0) {
+      return [];
+    }
+
+    return allPlatforms.filter(
+      (candidate) =>
+        getContentTypeForPlatform(candidate.name) === contentType
+        && !allowedPlatforms.includes(candidate.name),
+    );
+  };
+
+  const validateUrl = (value: string): { valid: boolean; platform?: Platform; opposite?: boolean; wrongPage?: boolean } => {
+    const normalizedValue = value.trim();
+    if (!normalizedValue) {
+      return { valid: false };
+    }
+
+    const matchedPlatform = findMatchingPlatform(normalizedValue, platforms);
+    if (matchedPlatform) {
+      return { valid: true, platform: matchedPlatform };
+    }
+
+    const oppositePlatform = findMatchingPlatform(normalizedValue, getOppositePlatforms());
+    if (oppositePlatform) {
+      return {
+        valid: false,
+        platform: oppositePlatform,
+        opposite: true,
+      };
+    }
+
+    const wrongPagePlatform = findMatchingPlatform(normalizedValue, getSameTypeDisallowedPlatforms());
+    if (wrongPagePlatform) {
+      return {
+        valid: false,
+        platform: wrongPagePlatform,
+        wrongPage: true,
+      };
     }
 
     return { valid: false };
@@ -55,48 +128,69 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabl
     e.preventDefault();
     setError('');
 
-    if (!url.trim()) {
-      setError('请输入漫画 URL');
+    const normalizedUrl = url.trim();
+    if (!normalizedUrl) {
+      setError(`请输入${currentTypeLabel} URL`);
       return;
     }
 
     // 检测是否是批量模式（多行输入）
-    const lines = url.trim().split('\n').filter(line => line.trim() !== '');
+    const lines = normalizedUrl.split('\n').map((line) => line.trim()).filter((line) => line !== '');
 
     if (lines.length > 1 && onBatchDownload) {
-      // 批量下载模式
       const validUrls: string[] = [];
-      const invalidUrls: string[] = [];
+      const invalidResults: Array<{ opposite?: boolean; wrongPage?: boolean }> = [];
 
       for (const line of lines) {
-        const { valid, platform } = validateUrl(line);
+        const result = validateUrl(line);
+        const { valid } = result;
         if (valid) {
           validUrls.push(line);
         } else {
-          invalidUrls.push(line);
+          invalidResults.push(result);
         }
       }
 
+      if (invalidResults.some((result) => result.wrongPage)) {
+        setError(getWrongPageMessage());
+        return;
+      }
+
+      if (invalidResults.some((result) => result.opposite)) {
+        setError(getSwitchMessage());
+        return;
+      }
+
       if (validUrls.length === 0) {
-        setError(`所有 URL 都无效，请输入支持的漫画网站链接`);
+        setError(`所有 URL 都无效，请输入支持的${currentTypeLabel}网站链接`);
         return;
       }
 
-      if (invalidUrls.length > 0) {
-        setError(`部分 URL 无效（已跳过 ${invalidUrls.length} 个）`);
+      if (invalidResults.length > 0) {
+        setError(`部分 URL 无效（已跳过 ${invalidResults.length} 个）`);
       }
 
-      onBatchDownload(validUrls);
+        onBatchDownload(validUrls);
     } else {
-      // 单个下载模式
-      const { valid } = validateUrl(url);
+      const matched = validateUrl(normalizedUrl);
+      const { valid } = matched;
       if (!valid) {
-        const platformNames = platforms.map(p => p.display_name).join('、');
-        setError(`请输入支持的漫画网站链接 (${platformNames})`);
+        if (matched.wrongPage) {
+          setError(getWrongPageMessage());
+          return;
+        }
+
+        if (matched.opposite) {
+          setError(getSwitchMessage());
+          return;
+        }
+
+        const platformNames = platforms.map((p) => p.display_name).join('、');
+        setError(`请输入支持的${currentTypeLabel}网站链接 (${platformNames})`);
         return;
       }
 
-      onDownload(url);
+      onDownload(normalizedUrl);
     }
   };
 
@@ -175,7 +269,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabl
               }}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              placeholder="粘贴多个漫画链接，每行一个..."
+              placeholder={`粘贴多个${currentTypeLabel}链接，每行一个...`}
               disabled={disabled}
               rows={6}
               className="flex-1 px-5 pb-5 text-base bg-transparent outline-none resize-none
@@ -191,7 +285,7 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabl
               }}
               onFocus={() => setFocused(true)}
               onBlur={() => setFocused(false)}
-              placeholder="粘贴漫画章节链接..."
+              placeholder={`粘贴${currentTypeLabel}章节链接...`}
               disabled={disabled}
               className="flex-1 py-5 pr-5 text-base bg-transparent outline-none
                          placeholder:text-gray-400 disabled:opacity-60 disabled:cursor-not-allowed"
@@ -259,11 +353,14 @@ const UrlInput: React.FC<UrlInputProps> = ({ onDownload, onBatchDownload, disabl
 
       {/* Example URL hints */}
       <div className="space-y-1 text-center text-xs text-gray-400">
-        <p>支持的平台：{platforms.map(p => p.display_name).join('、')}</p>
+        <p>支持的平台：{platforms.map((p) => p.display_name).join('、')}</p>
         {isBatchMode ? (
           <p>批量模式：每行粘贴一个链接，支持最多 20 个链接</p>
         ) : (
-          <p>示例：https://www.manhuagui.com/comic/58667/868543.html</p>
+          <p>
+            示例：
+            {resolvedExampleUrl}
+          </p>
         )}
       </div>
     </form>

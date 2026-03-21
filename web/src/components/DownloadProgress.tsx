@@ -1,8 +1,11 @@
 import React from 'react';
 import { TaskStatus, getDownloadUrl } from '../api/client';
+import { getContentTypeForPlatform, type ContentType } from '../lib/contentType';
 
 interface DownloadProgressProps {
   status: TaskStatus | null;
+  contentType: ContentType;
+  idleLabel?: string;
 }
 
 // 平台显示配置
@@ -12,6 +15,31 @@ const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string 
     color: 'text-emerald-500',
     bg: 'bg-gradient-to-br from-emerald-200/50 to-green-200/50',
   },
+  tencent: {
+    name: '腾讯视频',
+    color: 'text-sky-500',
+    bg: 'bg-gradient-to-br from-sky-200/50 to-cyan-200/50',
+  },
+  iqiyi: {
+    name: '爱奇艺',
+    color: 'text-lime-500',
+    bg: 'bg-gradient-to-br from-lime-200/50 to-green-200/50',
+  },
+  youku: {
+    name: '优酷',
+    color: 'text-amber-500',
+    bg: 'bg-gradient-to-br from-amber-200/50 to-yellow-200/50',
+  },
+  mango: {
+    name: '芒果TV',
+    color: 'text-orange-500',
+    bg: 'bg-gradient-to-br from-orange-200/50 to-red-200/50',
+  },
+  bilibili: {
+    name: '哔哩哔哩',
+    color: 'text-pink-500',
+    bg: 'bg-gradient-to-br from-pink-200/50 to-rose-200/50',
+  },
   default: {
     name: '漫画平台',
     color: 'text-primary',
@@ -19,16 +47,38 @@ const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string 
   },
 };
 
-const DownloadProgress: React.FC<DownloadProgressProps> = ({ status }) => {
+const DownloadProgress: React.FC<DownloadProgressProps> = ({ status, contentType, idleLabel }) => {
   if (!status) {
-    return null;
+    if (!idleLabel) {
+      return null;
+    }
+
+    return (
+      <div className="glass-card rounded-3xl overflow-hidden">
+        <div className="px-6 py-5">
+          <p className="font-medium text-gray-800">{idleLabel}</p>
+          <p className="text-sm text-gray-400 mt-1">
+            {contentType === 'manga' ? '等待漫画下载任务开始' : '等待视频下载任务开始'}
+          </p>
+        </div>
+      </div>
+    );
   }
 
   const { task_id, status: taskStatus, progress, total, message, manga_info, platform, error } = status;
+  if (platform && getContentTypeForPlatform(platform) !== contentType) {
+    return null;
+  }
+
   const percentage = total > 0 ? Math.round((progress / total) * 100) : 0;
+  const contentLabel = contentType === 'manga' ? '漫画' : '视频';
+  const unitLabel = contentType === 'manga' ? '页' : '集';
 
   // 获取平台配置
-  const platformConfig = PLATFORM_CONFIG[platform || ''] || PLATFORM_CONFIG.default;
+  const platformConfig = PLATFORM_CONFIG[platform || ''] || {
+    ...PLATFORM_CONFIG.default,
+    name: contentType === 'video' ? '视频平台' : PLATFORM_CONFIG.default.name,
+  };
 
   // Status configuration
   const statusConfig = {
@@ -95,10 +145,10 @@ const DownloadProgress: React.FC<DownloadProgressProps> = ({ status }) => {
 
             <div className="flex-1 min-w-0">
               <h3 className="font-bold text-lg text-gray-800 truncate">
-                {manga_info.title || `漫画 ${manga_info.comic_id || ''}`}
+                {manga_info.title || `${contentLabel} ${manga_info.comic_id || ''}`}
               </h3>
               <p className="text-gray-500 mt-0.5">
-                {manga_info.chapter || `第${manga_info.episode_id || '?'}话`}
+                {manga_info.chapter || (contentType === 'manga' ? `第${manga_info.episode_id || '?'}话` : `${contentLabel}下载任务`)}
               </p>
 
               {/* Platform badge and page count */}
@@ -161,7 +211,7 @@ const DownloadProgress: React.FC<DownloadProgressProps> = ({ status }) => {
               <div className="flex items-center gap-2">
                 <span className="text-2xl font-bold gradient-text">{percentage}%</span>
                 <span className="text-sm text-gray-400">
-                  ({progress}/{total} 页)
+                  ({progress}/{total} {unitLabel})
                 </span>
               </div>
 

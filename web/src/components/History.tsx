@@ -1,5 +1,13 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { HistoryItem, getHistory, getDownloadUrl } from '../api/client';
+import { filterByContentType, type ContentType } from '../lib/contentType';
+
+interface HistoryProps {
+  contentType: ContentType;
+  emptyTitle: string;
+  emptyHint: string;
+  allowedPlatforms?: string[];
+}
 
 // 平台显示配置
 const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string }> = {
@@ -8,6 +16,31 @@ const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string 
     color: 'text-emerald-500',
     bg: 'bg-gradient-to-br from-emerald-100/50 to-green-100/50',
   },
+  tencent: {
+    name: '腾讯视频',
+    color: 'text-sky-500',
+    bg: 'bg-gradient-to-br from-sky-100/50 to-cyan-100/50',
+  },
+  iqiyi: {
+    name: '爱奇艺',
+    color: 'text-lime-500',
+    bg: 'bg-gradient-to-br from-lime-100/50 to-green-100/50',
+  },
+  youku: {
+    name: '优酷',
+    color: 'text-amber-500',
+    bg: 'bg-gradient-to-br from-amber-100/50 to-yellow-100/50',
+  },
+  mango: {
+    name: '芒果TV',
+    color: 'text-orange-500',
+    bg: 'bg-gradient-to-br from-orange-100/50 to-red-100/50',
+  },
+  bilibili: {
+    name: '哔哩哔哩',
+    color: 'text-pink-500',
+    bg: 'bg-gradient-to-br from-pink-100/50 to-rose-100/50',
+  },
   default: {
     name: '漫画',
     color: 'text-primary',
@@ -15,24 +48,44 @@ const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string 
   },
 };
 
-const History: React.FC = () => {
+const History: React.FC<HistoryProps> = ({ contentType, emptyTitle, emptyHint, allowedPlatforms }) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const isMountedRef = useRef(true);
+  const requestIdRef = useRef(0);
 
   useEffect(() => {
+    isMountedRef.current = true;
     loadHistory();
-    const interval = setInterval(loadHistory, 5000);
-    return () => clearInterval(interval);
+    const interval = setInterval(() => {
+      void loadHistory();
+    }, 5000);
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(interval);
+    };
   }, []);
 
   const loadHistory = async () => {
+    const requestId = ++requestIdRef.current;
+
     try {
       const data = await getHistory();
+      if (!isMountedRef.current || requestId !== requestIdRef.current) {
+        return;
+      }
+
       setHistory(data.history || []);
     } catch (e) {
+      if (!isMountedRef.current || requestId !== requestIdRef.current) {
+        return;
+      }
+
       console.error('加载历史失败', e);
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && requestId === requestIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -67,8 +120,19 @@ const History: React.FC = () => {
 
   const getPlatformConfig = (platform?: string) => {
     if (!platform) return PLATFORM_CONFIG.default;
-    return PLATFORM_CONFIG[platform] || PLATFORM_CONFIG.default;
+    return PLATFORM_CONFIG[platform] || {
+      ...PLATFORM_CONFIG.default,
+      name: contentType === 'video' ? '视频' : PLATFORM_CONFIG.default.name,
+    };
   };
+
+  const filteredHistory = filterByContentType(history, contentType).filter((item) => {
+    if (!allowedPlatforms || allowedPlatforms.length === 0) {
+      return true;
+    }
+
+    return item.platform ? allowedPlatforms.includes(item.platform) : false;
+  });
 
   return (
     <div className="glass-card rounded-3xl overflow-hidden">
@@ -82,13 +146,13 @@ const History: React.FC = () => {
           </div>
           <div>
             <h3 className="font-bold text-gray-800">下载历史</h3>
-            {!loading && history.length > 0 && (
-              <p className="text-xs text-gray-400">共 {history.length} 条记录</p>
+            {!loading && filteredHistory.length > 0 && (
+              <p className="text-xs text-gray-400">共 {filteredHistory.length} 条记录</p>
             )}
           </div>
         </div>
 
-        {!loading && history.length > 0 && (
+        {!loading && filteredHistory.length > 0 && (
           <div className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
             自动更新
           </div>
@@ -105,19 +169,19 @@ const History: React.FC = () => {
             </svg>
             加载中...
           </div>
-        ) : history.length === 0 ? (
+        ) : filteredHistory.length === 0 ? (
           <div className="text-center py-12">
             <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-gradient-to-br from-gray-100 to-gray-50 flex items-center justify-center">
               <svg className="w-8 h-8 text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4" />
               </svg>
             </div>
-            <p className="text-gray-400 text-sm">暂无下载记录</p>
-            <p className="text-gray-300 text-xs mt-1">下载的漫画会显示在这里</p>
+            <p className="text-gray-400 text-sm">{emptyTitle}</p>
+            <p className="text-gray-300 text-xs mt-1">{emptyHint}</p>
           </div>
         ) : (
           <div className="space-y-2">
-            {history.map((item, index) => {
+            {filteredHistory.map((item, index) => {
               const platformConfig = getPlatformConfig(item.platform);
 
               return (

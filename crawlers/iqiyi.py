@@ -8,9 +8,11 @@
 """
 
 import re
+import asyncio
 import logging
 from typing import Optional, List
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
@@ -24,6 +26,7 @@ logger = logging.getLogger(__name__)
 # URL 模式
 _IQIYI_PATTERN = re.compile(r'iqiyi\.com/v_[a-zA-Z0-9]+\.html')
 _IQIYI_COMIC_PATTERN = re.compile(r'iqiyi\.com[/a-zA-Z]*[_-]([a-zA-Z0-9]+)\.html')
+_IQIYI_REDIRECT_PATTERN = re.compile(r'iqiyi\.com/tvg/to_page_url\?.+')
 
 # 爱奇艺 API
 _IQIYI_API_BASE = "https://www.iqiyi.com"
@@ -39,6 +42,7 @@ class IqiyiCrawler(BaseCrawler):
         r"iqiyi\.com/v_[a-zA-Z0-9]+\.html",
         r"iqiyi\.com/d_[a-zA-Z0-9]+\.html",
         r"iqiyi\.com/p/[a-zA-Z0-9]+\.html",
+        r"iqiyi\.com/tvg/to_page_url\?.+",
     ]
 
     def _extract_ids(self, url: str) -> tuple:
@@ -58,20 +62,20 @@ class IqiyiCrawler(BaseCrawler):
         if match:
             return None, match.group(1)
 
+        if "iqiyi.com/tvg/to_page_url" in url:
+            parsed = parse_qs(urlparse(url).query)
+            return None, parsed.get("album_id", [None])[0] or parsed.get("tv_id", [None])[0]
+
         return None, None
 
     def _is_video_url(self, url: str) -> bool:
         """判断是否为视频 URL"""
-        return bool(_IQIYI_PATTERN.search(url))
+        return bool(_IQIYI_PATTERN.search(url) or _IQIYI_COMIC_PATTERN.search(url) or _IQIYI_REDIRECT_PATTERN.search(url))
 
     async def get_info(self, url: str) -> MangaInfo:
         """获取视频信息"""
         if not self._is_video_url(url):
             raise ValueError("无效的爱奇艺 URL")
-
-        video_id = self._extract_ids(url)[1]
-        if not video_id:
-            raise ValueError("无法提取视频 ID")
 
         await self.start_browser(headless=True)
 
@@ -80,6 +84,10 @@ class IqiyiCrawler(BaseCrawler):
 
             # 等待页面加载
             await asyncio.sleep(3)
+
+            video_id = self._extract_ids(self.page.url)[1] or self._extract_ids(url)[1]
+            if not video_id:
+                raise ValueError("无法提取视频 ID")
 
             # 获取视频标题
             title = await self.page.evaluate('''
@@ -112,22 +120,28 @@ class IqiyiCrawler(BaseCrawler):
         """提取图片URL列表"""
         return []
 
+    def _extract_video_urls_from_content(self, page_content: str) -> List[str]:
+        pattern = re.compile(r'https?://[^\s"\'<>]+?(?:\.flv|\.f4v|\.mp4)(?:\?[^\s"\'<>]*)?')
+        seen = set()
+        urls = []
+
+        for match in pattern.findall(page_content):
+            if match in seen:
+                continue
+            seen.add(match)
+            urls.append(match)
+
+        return urls[:5]
+
     async def get_video_urls(self, url: str) -> List[str]:
         """获取视频播放地址"""
         if not self._is_video_url(url):
             return []
 
-        video_id = self._extract_ids(url)[1]
-        if not video_id:
-            return []
-
         # 爱奇艺视频地址通常在页面的 JavaScript 中
         page_content = await self.page.content()
 
-        # 尝试从页面中提取视频 URL
-        video_urls = re.findall(r'https?://[^\s]+(?:\.flv|\.f4v|\.mp4)[^\s]*', page_content)
-
-        return video_urls[:5]  # 返回前5个候选地址
+        return self._extract_video_urls_from_content(page_content)
 
     async def download(
         self,
@@ -149,15 +163,15 @@ class IqiyiCrawler(BaseCrawler):
         if not self._is_video_url(url):
             raise ValueError("无效的爱奇艺 URL")
 
-        video_id = self._extract_ids(url)[1]
-        if not video_id:
-            raise ValueError("无法提取视频 ID")
-
         await self.start_browser(headless=True)
 
         try:
             await self.page.goto(url, wait_until="networkidle", timeout=60000)
             await asyncio.sleep(3)
+
+            video_id = self._extract_ids(self.page.url)[1] or self._extract_ids(url)[1]
+            if not video_id:
+                raise ValueError("无法提取视频 ID")
 
             # 获取视频信息
             title = await self.page.evaluate('''
@@ -194,7 +208,7 @@ class IqiyiCrawler(BaseCrawler):
             logger.info(f"视频已下载到: {output_file}")
 
             if progress_callback:
-                await progress_callback(DownloadProgress(
+                await self._emit_progress(progress_callback, DownloadProgress(
                     current=1,
                     total=1,
                     message="下载完成",

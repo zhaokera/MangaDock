@@ -1,8 +1,11 @@
 """数据库操作单元测试"""
 
+import sqlite3
+
 import pytest
 from crawlers.db import (
     TaskRecord,
+    close_connection,
     save_task,
     get_task,
     delete_task,
@@ -154,6 +157,55 @@ class TestDatabaseOperations:
         assert retrieved.url == url
         assert retrieved.platform == "manhuagui"
         assert retrieved.status == "pending"
+
+    def test_reopens_connection_when_db_path_changes(self, tmp_path):
+        """测试切换 DB_PATH 时会重新打开连接而不是复用旧连接"""
+        import crawlers.db as db_module
+
+        original_path = db_module.DB_PATH
+        first_db_path = tmp_path / "first.db"
+        second_db_path = tmp_path / "second.db"
+
+        try:
+            close_connection()
+
+            db_module.DB_PATH = first_db_path
+            init_db()
+            save_task(
+                TaskRecord(
+                    task_id="task-first",
+                    url="https://example.com/first",
+                    platform="test",
+                )
+            )
+
+            db_module.DB_PATH = second_db_path
+            init_db()
+            save_task(
+                TaskRecord(
+                    task_id="task-second",
+                    url="https://example.com/second",
+                    platform="test",
+                )
+            )
+
+            with sqlite3.connect(first_db_path) as first_conn:
+                first_task_ids = {
+                    row[0]
+                    for row in first_conn.execute("SELECT task_id FROM tasks")
+                }
+
+            with sqlite3.connect(second_db_path) as second_conn:
+                second_task_ids = {
+                    row[0]
+                    for row in second_conn.execute("SELECT task_id FROM tasks")
+                }
+
+            assert first_task_ids == {"task-first"}
+            assert second_task_ids == {"task-second"}
+        finally:
+            close_connection()
+            db_module.DB_PATH = original_path
 
     def test_delete_task(self, db_with_path):
         """测试删除任务"""

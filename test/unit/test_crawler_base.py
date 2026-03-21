@@ -207,6 +207,40 @@ class TestBaseCrawlerDownloadProgress:
         assert result["status"] == "pending"
 
 
+class TestBaseCrawlerProgressCallback:
+    """进度回调兼容性测试"""
+
+    @pytest.mark.asyncio
+    async def test_emit_progress_accepts_sync_callback(self):
+        crawler = TestCrawlerImpl()
+        calls = []
+
+        def progress_callback(progress: DownloadProgress):
+            calls.append(progress.status)
+
+        await crawler._emit_progress(
+            progress_callback,
+            DownloadProgress(current=1, total=1, message="done", status="completed"),
+        )
+
+        assert calls == ["completed"]
+
+    @pytest.mark.asyncio
+    async def test_emit_progress_accepts_async_callback(self):
+        crawler = TestCrawlerImpl()
+        calls = []
+
+        async def progress_callback(progress: DownloadProgress):
+            calls.append(progress.status)
+
+        await crawler._emit_progress(
+            progress_callback,
+            DownloadProgress(current=1, total=1, message="done", status="completed"),
+        )
+
+        assert calls == ["completed"]
+
+
 class TestBaseCrawlerInit:
     """BaseCrawler 初始化测试"""
 

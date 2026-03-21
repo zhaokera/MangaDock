@@ -79,12 +79,19 @@ _thread_local = threading.local()
 def get_connection() -> sqlite3.Connection:
     """获取线程-local 的数据库连接"""
     conn = getattr(_thread_local, "conn", None)
+    current_db_path = str(DB_PATH)
+    active_db_path = getattr(_thread_local, "db_path", None)
+
+    if conn is not None and active_db_path != current_db_path:
+        close_connection()
+        conn = None
+
     if conn is None:
         # 确保目录存在
-        DB_DIR.mkdir(parents=True, exist_ok=True)
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
         conn = sqlite3.connect(
-            str(DB_PATH),
+            current_db_path,
             check_same_thread=False,
             timeout=30.0
         )
@@ -95,6 +102,7 @@ def get_connection() -> sqlite3.Connection:
         conn.execute("PRAGMA busy_timeout=30000")
 
         _thread_local.conn = conn
+        _thread_local.db_path = current_db_path
 
     return conn
 
@@ -109,6 +117,7 @@ def close_connection():
             pass
         finally:
             _thread_local.conn = None
+            _thread_local.db_path = None
 
 
 def init_db():
