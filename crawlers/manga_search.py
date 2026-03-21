@@ -34,6 +34,24 @@ class MangaChapterResult:
         }
 
 
+@dataclass
+class MangaChapterCatalog:
+    title: str
+    platform: str
+    platform_display: str
+    url: str
+    chapters: List[MangaChapterResult] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "title": self.title,
+            "platform": self.platform,
+            "platform_display": self.platform_display,
+            "url": self.url,
+            "chapters": [chapter.to_dict() for chapter in self.chapters],
+        }
+
+
 class BaseMangaSearcher:
     PLATFORM_NAME: str = ""
     PLATFORM_DISPLAY: str = ""
@@ -41,7 +59,7 @@ class BaseMangaSearcher:
     async def search(self, keyword: str, limit: int = 10) -> List[MangaSearchResult]:
         raise NotImplementedError
 
-    async def get_chapters(self, url: str) -> dict:
+    async def get_chapters(self, url: str) -> MangaChapterCatalog:
         raise NotImplementedError
 
 

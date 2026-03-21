@@ -31,3 +31,13 @@ def test_manga_search_endpoint_returns_results_for_platform():
 
     assert response.status_code == 200
     assert response.json()["results"] == [mocked_results[0].to_dict()]
+
+
+def test_manga_search_endpoint_returns_not_implemented_for_real_manhuagui_stub():
+    response = client.get(
+        "/api/search/manga",
+        params={"keyword": "海贼王", "platform": "manhuagui", "limit": 5},
+    )
+
+    assert response.status_code == 501
+    assert "尚未实现" in response.json()["detail"]

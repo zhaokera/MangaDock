@@ -658,6 +658,20 @@ async def _run_search(keyword: str, platform: Optional[str], limit: int) -> dict
         raise HTTPException(status_code=500, detail=f"搜索失败: {e}")
 
 
+def _get_manga_searcher_or_400(platform: str):
+    searcher = get_manga_searcher(platform)
+    if searcher is None:
+        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
+    return searcher
+
+
+def _raise_manga_not_implemented(platform: str, action: str) -> None:
+    raise HTTPException(
+        status_code=501,
+        detail=f"漫画搜索平台 {platform} 尚未实现{action}",
+    )
+
+
 @app.post("/api/search")
 async def search_videos(request: SearchRequest, background_tasks: BackgroundTasks):
     """搜索视频 - 支持按名称搜索各大视频平台"""
@@ -680,23 +694,30 @@ async def search_videos_get(
 
 @app.get("/api/search/manga")
 async def search_manga(keyword: str, platform: str, limit: int = 10):
-    searcher = get_manga_searcher(platform)
-    if searcher is None:
-        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
+    searcher = _get_manga_searcher_or_400(platform)
 
-    results = await searcher.search(keyword, limit=limit)
-    return {"results": [item.to_dict() for item in results], "total": len(results), "platform": platform}
+    try:
+        results = await searcher.search(keyword, limit=limit)
+    except NotImplementedError:
+        _raise_manga_not_implemented(platform, "漫画搜索")
+
+    return {
+        "results": [item.to_dict() for item in results],
+        "total": len(results),
+        "platform": platform,
+    }
 
 
 @app.get("/api/manga/chapters")
 async def get_manga_chapters(url: str, platform: str):
-    searcher = get_manga_searcher(platform)
-    if searcher is None:
-        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
+    searcher = _get_manga_searcher_or_400(platform)
 
-    payload = await searcher.get_chapters(url)
-    payload["chapters"] = [chapter.to_dict() for chapter in payload["chapters"]]
-    return payload
+    try:
+        payload = await searcher.get_chapters(url)
+    except NotImplementedError:
+        _raise_manga_not_implemented(platform, "章节目录")
+
+    return payload.to_dict()
 
 
 @app.post("/api/download")

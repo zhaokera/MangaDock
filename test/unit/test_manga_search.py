@@ -1,5 +1,6 @@
 from crawlers.manga_search import (
     MangaChapterResult,
+    MangaChapterCatalog,
     MangaSearchResult,
     get_manga_searcher,
 )
@@ -30,3 +31,28 @@ def test_chapter_result_to_dict_keeps_url_and_title():
         "title": "第1话",
         "url": "https://www.manhuagui.com/comic/1/100.html",
     }
+
+
+def test_chapter_catalog_to_dict_serializes_chapters():
+    catalog = MangaChapterCatalog(
+        title="海贼王",
+        platform="manhuagui",
+        platform_display="漫画柜",
+        url="https://www.manhuagui.com/comic/1/",
+        chapters=[
+            MangaChapterResult(
+                title="第1话",
+                url="https://www.manhuagui.com/comic/1/100.html",
+            )
+        ],
+    )
+
+    payload = catalog.to_dict()
+
+    assert payload["title"] == "海贼王"
+    assert payload["chapters"] == [
+        {
+            "title": "第1话",
+            "url": "https://www.manhuagui.com/comic/1/100.html",
+        }
+    ]
