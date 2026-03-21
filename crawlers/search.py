@@ -56,6 +56,14 @@ class BaseSearcher:
     def _resolve_candidate_url(self, candidate: Dict[str, Any]) -> str:
         return self._normalize_text(candidate.get("url"))
 
+    def _should_keep_candidate(
+        self,
+        candidate: Dict[str, Any],
+        title: str,
+        url: str,
+    ) -> bool:
+        return True
+
     def _build_results_from_candidates(
         self,
         keyword: str,
@@ -69,6 +77,9 @@ class BaseSearcher:
             title = self._normalize_text(candidate.get("title") or candidate.get("text"))
             url = self._resolve_candidate_url(candidate)
             if not title or not url or url in seen_urls:
+                continue
+
+            if not self._should_keep_candidate(candidate, title, url):
                 continue
 
             score = self._calculate_score(keyword, title)
@@ -233,6 +244,18 @@ class IqiyiSearcher(BaseSearcher):
             await browser.close()
 
         return self._build_results_from_candidates(keyword, candidates, limit)
+
+    def _should_keep_candidate(
+        self,
+        candidate: Dict[str, Any],
+        title: str,
+        url: str,
+    ) -> bool:
+        lower_url = url.lower()
+        if "shortvideo" in lower_url:
+            return False
+
+        return True
 
     def _calculate_score(self, keyword: str, title: str) -> float:
         if not keyword or not title:

@@ -312,6 +312,36 @@ class TestCandidateNormalization:
         assert results[0].title == "灌篮高手 普通话"
         assert results[0].url == "https://www.iqiyi.com/tvg/to_page_url?album_id=MjAyOTE4MTAx"
 
+    def test_iqiyi_candidates_skip_shortvideo_redirect_urls(self):
+        searcher = IqiyiSearcher()
+
+        results = searcher._build_results_from_candidates(
+            "海贼王",
+            [
+                {
+                    "title": "海贼王 5秒高燃混剪",
+                    "url": (
+                        "https://www.iqiyi.com/tvg/to_page_url?"
+                        "ext_params=s3%3Dpca_115_shortvideo_card&tv_id=MTk4NTc2MjgwMA%3D%3D"
+                    ),
+                    "cid": None,
+                },
+                {
+                    "title": "海贼王 普通话",
+                    "url": (
+                        "https://www.iqiyi.com/tvg/to_page_url?"
+                        "album_id=MjAyOTE4MTAx&ext_params=s3%3Dpca_115_number_enlarge"
+                    ),
+                    "cid": None,
+                },
+            ],
+            limit=10,
+        )
+
+        assert len(results) == 1
+        assert results[0].title == "海贼王 普通话"
+        assert "shortvideo_card" not in results[0].url
+
 
 class TestSearchResultUrlCompatibility:
     """Test that search result URLs are accepted by download crawlers"""

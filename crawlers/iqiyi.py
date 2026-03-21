@@ -30,6 +30,7 @@ _IQIYI_REDIRECT_PATTERN = re.compile(r'iqiyi\.com/tvg/to_page_url\?.+')
 
 # 爱奇艺 API
 _IQIYI_API_BASE = "https://www.iqiyi.com"
+_IQIYI_PREVIEW_ASSET_PATTERN = re.compile(r"https?://static-d\.iqiyi\.com/lequ/", re.IGNORECASE)
 
 
 @register_crawler
@@ -133,6 +134,25 @@ class IqiyiCrawler(BaseCrawler):
 
         return urls[:5]
 
+    def _clean_video_url(self, url: str) -> str:
+        cleaned = url.strip()
+        cleaned = re.sub(r'(%22|["\']).*$', '', cleaned, flags=re.IGNORECASE)
+        media_match = re.search(r'https?://[^\s"\'<>]+?\.(?:flv|f4v|mp4)(?:\?[^\s"\'<>]*)?', cleaned, re.IGNORECASE)
+        if media_match:
+            return media_match.group(0)
+        return cleaned
+
+    def _select_download_url(self, urls: List[str]) -> Optional[str]:
+        for url in urls:
+            cleaned = self._clean_video_url(url)
+            if not cleaned:
+                continue
+            if _IQIYI_PREVIEW_ASSET_PATTERN.search(cleaned):
+                continue
+            return cleaned
+
+        return None
+
     async def get_video_urls(self, url: str) -> List[str]:
         """获取视频播放地址"""
         if not self._is_video_url(url):
@@ -197,8 +217,10 @@ class IqiyiCrawler(BaseCrawler):
             import httpx
 
             async with httpx.AsyncClient(headers=config.DEFAULT_HEADERS) as client:
-                # 尝试第一个视频地址
-                video_url = video_urls[0]
+                video_url = self._select_download_url(video_urls)
+                if not video_url:
+                    raise ValueError("未找到可下载的爱奇艺正片地址")
+
                 resp = await client.get(video_url)
                 resp.raise_for_status()
 

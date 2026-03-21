@@ -79,7 +79,7 @@ class TencentCrawler(BaseCrawler):
         await self.start_browser(headless=True)
 
         try:
-            await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
 
             # 等待页面加载
             await asyncio.sleep(3)
@@ -157,7 +157,7 @@ class TencentCrawler(BaseCrawler):
         await self.start_browser(headless=True)
 
         try:
-            await self.page.goto(url, wait_until="networkidle", timeout=60000)
+            await self.page.goto(url, wait_until="domcontentloaded", timeout=60000)
             await asyncio.sleep(3)
 
             cover_id, video_id = self._extract_ids(self.page.url)
