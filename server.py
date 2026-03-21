@@ -59,6 +59,7 @@ from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 from crawlers.auth import get_auth_manager, AuthManager
 from crawlers.resume import get_resume_manager, ResumeInfo
 from crawlers.registry import get_crawler_by_platform
+from crawlers.manga_search import get_manga_searcher
 
 # 导入配置管理
 import config
@@ -675,6 +676,27 @@ async def search_videos_get(
 ):
     """兼容前端 GET 请求的搜索接口。"""
     return await _run_search(keyword=keyword, platform=platform, limit=limit)
+
+
+@app.get("/api/search/manga")
+async def search_manga(keyword: str, platform: str, limit: int = 10):
+    searcher = get_manga_searcher(platform)
+    if searcher is None:
+        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
+
+    results = await searcher.search(keyword, limit=limit)
+    return {"results": [item.to_dict() for item in results], "total": len(results), "platform": platform}
+
+
+@app.get("/api/manga/chapters")
+async def get_manga_chapters(url: str, platform: str):
+    searcher = get_manga_searcher(platform)
+    if searcher is None:
+        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
+
+    payload = await searcher.get_chapters(url)
+    payload["chapters"] = [chapter.to_dict() for chapter in payload["chapters"]]
+    return payload
 
 
 @app.post("/api/download")
