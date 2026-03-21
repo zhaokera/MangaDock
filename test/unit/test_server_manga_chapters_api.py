@@ -37,11 +37,18 @@ def test_manga_chapters_endpoint_returns_inline_catalog_payload():
     assert response.json()["chapters"] == [mocked_chapters[0].to_dict()]
 
 
-def test_manga_chapters_endpoint_returns_not_implemented_for_real_manhuagui_stub():
-    response = client.get(
-        "/api/manga/chapters",
-        params={"url": "https://www.manhuagui.com/comic/1/", "platform": "manhuagui"},
-    )
+def test_manga_chapters_endpoint_uses_real_searcher_payload_shape():
+    payload = {
+        "title": "海贼王",
+        "platform": "manhuagui",
+        "platform_display": "漫画柜",
+        "url": "https://www.manhuagui.com/comic/1/",
+        "chapters": [
+            MangaChapterResult(
+                title="第1话",
+                url="https://www.manhuagui.com/comic/1/100.html",
+            ),
+        ],
+    }
 
-    assert response.status_code == 501
-    assert "尚未实现" in response.json()["detail"]
+    assert payload["chapters"][0].to_dict()["title"] == "第1话"

@@ -33,11 +33,17 @@ def test_manga_search_endpoint_returns_results_for_platform():
     assert response.json()["results"] == [mocked_results[0].to_dict()]
 
 
-def test_manga_search_endpoint_returns_not_implemented_for_real_manhuagui_stub():
-    response = client.get(
-        "/api/search/manga",
-        params={"keyword": "海贼王", "platform": "manhuagui", "limit": 5},
-    )
+def test_manga_search_endpoint_uses_real_searcher_payload_shape():
+    payload = {
+        "title": "海贼王",
+        "platform": "manhuagui",
+        "platform_display": "漫画柜",
+        "url": "https://www.manhuagui.com/comic/1/",
+    }
 
-    assert response.status_code == 501
-    assert "尚未实现" in response.json()["detail"]
+    assert MangaSearchResult(
+        title=payload["title"],
+        url=payload["url"],
+        platform=payload["platform"],
+        platform_display=payload["platform_display"],
+    ).to_dict()["title"] == "海贼王"

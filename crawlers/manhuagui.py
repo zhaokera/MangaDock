@@ -11,6 +11,7 @@ import re
 import logging
 from typing import Optional, List, Dict, Callable
 from pathlib import Path
+from urllib.parse import urljoin
 
 from .base import BaseCrawler, MangaInfo, DownloadProgress, ProgressCallback
 from .registry import register_crawler
@@ -40,6 +41,33 @@ _IMG_SERVER_PATTERN = re.compile(r'https?://[^.]+\.hamreus\.com')
 _MANHUAGUI_BASE_URL = "https://www.manhuagui.com"
 _MANHUAGUI_LOGIN_URL = "https://www.manhuagui.com/login"
 _MANHUAGUI_LOGOUT_URL = "https://www.manhuagui.com/logout"
+
+
+def normalize_manhuagui_comic_url(url: str) -> str:
+    """把漫画柜作品页规范化为作品详情页 URL。"""
+    if not url:
+        return ""
+
+    normalized = urljoin(_MANHUAGUI_BASE_URL, url)
+
+    chapter_match = re.search(r"/comic/(\d+)/(\d+)(?:\.html)?/?$", normalized)
+    if chapter_match:
+        return f"{_MANHUAGUI_BASE_URL}/comic/{chapter_match.group(1)}/"
+
+    comic_match = re.search(r"/comic/(\d+)/?$", normalized)
+    if comic_match:
+        return f"{_MANHUAGUI_BASE_URL}/comic/{comic_match.group(1)}/"
+
+    return normalized
+
+
+def manhuagui_chapter_sort_key(title: str, url: str) -> tuple:
+    """按章节标题或 URL 中的数字提取排序键。"""
+    text = f"{title or ''} {url or ''}"
+    match = re.search(r"(\d+)", text)
+    if match:
+        return int(match.group(1)), text
+    return 10**9, text
 
 
 # LZString 解密实现 - 使用正确的算法
