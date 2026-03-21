@@ -37,3 +37,31 @@ it('uses a configurable action label for each result', async () => {
     }),
   );
 });
+
+it('disables result actions while the page is loading chapter details', async () => {
+  const user = userEvent.setup();
+  const onSelect = vi.fn();
+
+  render(
+    <MangaSearchResults
+      results={[
+        {
+          title: '海贼王',
+          url: 'https://www.manhuagui.com/comic/1/',
+          platform: 'manhuagui',
+          platform_display: '漫画柜',
+        },
+      ]}
+      disabled
+      actionLabel={(result) => `查看章节 ${result.title}`}
+      onSelect={onSelect}
+    />,
+  );
+
+  const button = screen.getByRole('button', { name: '查看章节 海贼王' });
+  expect(button).toBeDisabled();
+
+  await user.click(button);
+
+  expect(onSelect).not.toHaveBeenCalled();
+});

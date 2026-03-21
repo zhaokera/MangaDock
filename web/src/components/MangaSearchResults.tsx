@@ -4,11 +4,18 @@ import type { MangaSearchResult } from '../api/client';
 interface MangaSearchResultsProps {
   results: MangaSearchResult[];
   loading?: boolean;
+  disabled?: boolean;
   onSelect: (result: MangaSearchResult) => void;
   actionLabel?: string | ((result: MangaSearchResult) => string);
 }
 
-const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({ results, loading = false, onSelect, actionLabel }) => {
+const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({
+  results,
+  loading = false,
+  disabled = false,
+  onSelect,
+  actionLabel,
+}) => {
   const getActionLabel = (result: MangaSearchResult) => {
     if (typeof actionLabel === 'function') {
       return actionLabel(result);
@@ -37,7 +44,8 @@ const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({ results, loadin
             <button
               type="button"
               onClick={() => onSelect(result)}
-              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white"
+              disabled={disabled}
+              className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
             >
               {getActionLabel(result)}
             </button>

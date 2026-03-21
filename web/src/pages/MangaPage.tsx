@@ -250,6 +250,7 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
             <MangaSearchResults
               results={searchResults}
               loading={searchLoading}
+              disabled={chapterLoading || downloading}
               onSelect={handleSelectSearchResult}
               actionLabel={(result) => `查看章节 ${result.title}`}
             />
