@@ -222,6 +222,14 @@ export interface MangaChapter {
   url: string;
 }
 
+export interface MangaChapterCatalog {
+  title: string;
+  platform: string;
+  platform_display: string;
+  url: string;
+  chapters: MangaChapter[];
+}
+
 // 搜索视频/漫画
 export async function searchVideos(keyword: string, platform?: string, limit: number = 10): Promise<{ results: SearchResult[]; total: number; platform?: string }> {
   const response = await fetch(`${API_BASE}/search`, {
@@ -261,7 +269,7 @@ export async function searchManga(keyword: string, platform: string, limit: numb
   return response.json();
 }
 
-export async function getMangaChapters(url: string, platform: string): Promise<{ title: string; chapters: MangaChapter[] }> {
+export async function getMangaChapters(url: string, platform: string): Promise<MangaChapterCatalog> {
   const response = await fetch(
     `${API_BASE}/manga/chapters?${new URLSearchParams({
       url,

@@ -5,9 +5,18 @@ interface MangaSearchResultsProps {
   results: MangaSearchResult[];
   loading?: boolean;
   onSelect: (result: MangaSearchResult) => void;
+  actionLabel?: string | ((result: MangaSearchResult) => string);
 }
 
-const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({ results, loading = false, onSelect }) => {
+const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({ results, loading = false, onSelect, actionLabel }) => {
+  const getActionLabel = (result: MangaSearchResult) => {
+    if (typeof actionLabel === 'function') {
+      return actionLabel(result);
+    }
+
+    return actionLabel || '选择';
+  };
+
   if (loading) {
     return <div>正在搜索...</div>;
   }
@@ -30,7 +39,7 @@ const MangaSearchResults: React.FC<MangaSearchResultsProps> = ({ results, loadin
               onClick={() => onSelect(result)}
               className="rounded-lg bg-primary px-4 py-2 text-sm font-medium text-white"
             >
-              选择
+              {getActionLabel(result)}
             </button>
           </div>
         </div>

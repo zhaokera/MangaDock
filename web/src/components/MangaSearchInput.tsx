@@ -11,13 +11,26 @@ const MangaSearchInput: React.FC<MangaSearchInputProps> = ({ platforms, loading,
   const [platform, setPlatform] = useState(platforms[0]?.name ?? '');
 
   useEffect(() => {
-    if (!platform && platforms[0]?.name) {
+    if (platforms.length === 0) {
+      if (platform !== '') {
+        setPlatform('');
+      }
+      return;
+    }
+
+    if (!platforms.some((item) => item.name === platform)) {
       setPlatform(platforms[0].name);
     }
   }, [platform, platforms]);
 
+  const hasValidPlatform = platforms.some((item) => item.name === platform);
+
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
+    if (!keyword.trim() || !hasValidPlatform) {
+      return;
+    }
+
     onSearch(keyword.trim(), platform);
   };
 
@@ -52,7 +65,7 @@ const MangaSearchInput: React.FC<MangaSearchInputProps> = ({ platforms, loading,
 
       <button
         type="submit"
-        disabled={loading || !keyword.trim()}
+        disabled={loading || !keyword.trim() || !hasValidPlatform}
         className="rounded-xl bg-primary px-5 py-3 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-60"
       >
         {loading ? '搜索中...' : '搜索'}

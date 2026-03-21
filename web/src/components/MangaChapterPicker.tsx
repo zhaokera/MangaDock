@@ -7,6 +7,7 @@ interface MangaChapterPickerProps {
   onToggleChapter: (url: string) => void;
   onSelectAll: () => void;
   onClearAll: () => void;
+  chapterLabelPrefix?: string;
 }
 
 const MangaChapterPicker: React.FC<MangaChapterPickerProps> = ({
@@ -15,6 +16,7 @@ const MangaChapterPicker: React.FC<MangaChapterPickerProps> = ({
   onToggleChapter,
   onSelectAll,
   onClearAll,
+  chapterLabelPrefix = '选择章节',
 }) => {
   return (
     <div className="space-y-4">
@@ -37,6 +39,7 @@ const MangaChapterPicker: React.FC<MangaChapterPickerProps> = ({
                 type="checkbox"
                 checked={checked}
                 onChange={() => onToggleChapter(chapter.url)}
+                aria-label={`${chapterLabelPrefix} ${chapter.title}`}
               />
               <span className="text-sm text-gray-700">{chapter.title}</span>
             </label>
