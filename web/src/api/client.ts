@@ -209,6 +209,19 @@ export interface SearchResult {
   };
 }
 
+export interface MangaSearchResult {
+  title: string;
+  url: string;
+  platform: string;
+  platform_display: string;
+  extra?: Record<string, string>;
+}
+
+export interface MangaChapter {
+  title: string;
+  url: string;
+}
+
 // 搜索视频/漫画
 export async function searchVideos(keyword: string, platform?: string, limit: number = 10): Promise<{ results: SearchResult[]; total: number; platform?: string }> {
   const response = await fetch(`${API_BASE}/search`, {
@@ -226,6 +239,39 @@ export async function searchVideos(keyword: string, platform?: string, limit: nu
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.detail || '搜索失败');
+  }
+
+  return response.json();
+}
+
+export async function searchManga(keyword: string, platform: string, limit: number = 10): Promise<{ results: MangaSearchResult[]; total: number; platform?: string }> {
+  const response = await fetch(
+    `${API_BASE}/search/manga?${new URLSearchParams({
+      keyword,
+      platform,
+      limit: String(limit),
+    })}`,
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '搜索失败');
+  }
+
+  return response.json();
+}
+
+export async function getMangaChapters(url: string, platform: string): Promise<{ title: string; chapters: MangaChapter[] }> {
+  const response = await fetch(
+    `${API_BASE}/manga/chapters?${new URLSearchParams({
+      url,
+      platform,
+    })}`,
+  );
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '获取章节失败');
   }
 
   return response.json();
