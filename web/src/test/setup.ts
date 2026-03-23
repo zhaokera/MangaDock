@@ -27,3 +27,10 @@ const EventSourceMock = vi.fn(function MockEventSource(this: { url: string }, ur
 
 vi.stubGlobal('fetch', fetchMock);
 vi.stubGlobal('EventSource', EventSourceMock);
+
+Object.defineProperty(globalThis.navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: vi.fn().mockResolvedValue(undefined),
+  },
+});

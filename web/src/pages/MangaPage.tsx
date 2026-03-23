@@ -375,6 +375,10 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
             status={currentTask}
             contentType="manga"
             idleLabel="漫画下载进度"
+            onReset={() => {
+              setCurrentTask(null);
+              setDownloading(false);
+            }}
           />
         </section>
       )}

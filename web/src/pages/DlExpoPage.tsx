@@ -21,6 +21,7 @@ const DL_EXPO_PLATFORM = 'dl_expo';
 const DlExpoPage: React.FC<DlExpoPageProps> = ({ platforms, allPlatforms = platforms }) => {
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [lastRequestedUrl, setLastRequestedUrl] = useState<string | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
@@ -33,6 +34,7 @@ const DlExpoPage: React.FC<DlExpoPageProps> = ({ platforms, allPlatforms = platf
     try {
       setDownloading(true);
       setCurrentTask(null);
+      setLastRequestedUrl(url);
       unsubscribeRef.current?.();
       unsubscribeRef.current = null;
 
@@ -107,6 +109,11 @@ const DlExpoPage: React.FC<DlExpoPageProps> = ({ platforms, allPlatforms = platf
             status={currentTask}
             contentType="video"
             idleLabel="糯米影视下载进度"
+            onReset={() => {
+              setCurrentTask(null);
+              setDownloading(false);
+            }}
+            onRetry={lastRequestedUrl ? () => beginDownload(lastRequestedUrl) : undefined}
           />
         </section>
       )}

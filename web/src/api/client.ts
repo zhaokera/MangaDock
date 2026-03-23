@@ -186,6 +186,30 @@ export async function getHistory(): Promise<{ history: HistoryItem[] }> {
   return response.json();
 }
 
+export async function deleteHistoryItem(taskId: string): Promise<void> {
+  const response = await fetch(`${API_BASE}/history/${taskId}`, {
+    method: 'DELETE',
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '删除历史失败');
+  }
+}
+
+export async function clearHistory(platforms?: string[]): Promise<void> {
+  const response = await fetch(`${API_BASE}/history`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(platforms && platforms.length > 0 ? { platforms } : {}),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.detail || '清空历史失败');
+  }
+}
+
 // === 搜索 API ===
 
 export interface SearchPlatform {

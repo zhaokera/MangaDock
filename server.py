@@ -49,6 +49,7 @@ from crawlers import (
     get_task,
     save_task,
     delete_task,
+    delete_history_tasks,
     get_all_tasks,
     get_history_tasks,
     get_total_count,
@@ -99,6 +100,10 @@ class SearchResponse(BaseModel):
     results: List[dict]
     total: int
     platform: Optional[str] = None
+
+
+class ClearHistoryRequest(BaseModel):
+    platforms: Optional[List[str]] = None
 
 
 class MangaInfoResponse(BaseModel):
@@ -1027,6 +1032,24 @@ async def get_history(page: int = 1, page_size: int = 50):
         "page_size": page_size,
         "has_more": end < total
     }
+
+
+@app.delete("/api/history/{task_id}")
+async def delete_history_item(task_id: str):
+    """删除单条历史记录"""
+    task = get_task(task_id)
+    if not task or task.status not in {"completed", "failed"}:
+        raise HTTPException(status_code=404, detail="历史记录不存在")
+
+    deleted = delete_task(task_id)
+    return {"deleted": deleted, "task_id": task_id}
+
+
+@app.delete("/api/history")
+async def clear_history(request: ClearHistoryRequest = Body(default=ClearHistoryRequest())):
+    """清空历史记录"""
+    deleted = delete_history_tasks(request.platforms)
+    return {"deleted": deleted}
 
 
 @app.post("/api/queue/pause")

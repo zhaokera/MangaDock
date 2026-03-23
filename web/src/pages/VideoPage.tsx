@@ -27,9 +27,10 @@ const getPlatformColor = (platform?: string) => {
 
 const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
-  const [downloading, setDownloading] = useState(false);
   const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
+  const [lastRequestedUrl, setLastRequestedUrl] = useState<string | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
+  const downloading = currentTask?.status === 'pending' || currentTask?.status === 'downloading';
 
   useEffect(() => {
     getPlatforms()
@@ -44,6 +45,7 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
     try {
       setCurrentTask(null);
       unsubscribeRef.current?.();
+      setLastRequestedUrl(result.url);
 
       const downloadResult = await startDownload(result.url);
       setCurrentTask({
@@ -71,6 +73,7 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
     try {
       setCurrentTask(null);
       unsubscribeRef.current?.();
+      setLastRequestedUrl(url);
 
       const downloadResult = await startDownload(url);
       setCurrentTask({
@@ -128,6 +131,8 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
             status={currentTask}
             contentType="video"
             idleLabel="视频下载进度"
+            onReset={() => setCurrentTask(null)}
+            onRetry={lastRequestedUrl ? () => handleDirectDownload(lastRequestedUrl) : undefined}
           />
         </section>
       )}

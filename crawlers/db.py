@@ -244,6 +244,25 @@ def delete_task(task_id: str) -> bool:
     return cursor.rowcount > 0
 
 
+def delete_history_tasks(platforms: Optional[List[str]] = None) -> int:
+    """删除历史任务记录（已完成或失败）"""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    if platforms:
+        placeholders = ", ".join("?" for _ in platforms)
+        cursor.execute(
+            f"""DELETE FROM tasks
+                WHERE status IN ('completed', 'failed') AND platform IN ({placeholders})""",
+            tuple(platforms),
+        )
+    else:
+        cursor.execute("DELETE FROM tasks WHERE status IN ('completed', 'failed')")
+
+    conn.commit()
+    return cursor.rowcount
+
+
 def get_tasks_by_status(status: str, limit: int = 50, offset: int = 0) -> List[TaskRecord]:
     """根据状态获取任务记录"""
     conn = get_connection()

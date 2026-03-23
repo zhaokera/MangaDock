@@ -146,8 +146,7 @@ class TestScoreCalculation:
     def test_no_match(self, tencent_searcher):
         """Test when keyword not in title"""
         score = tencent_searcher._calculate_score("火影忍者", "进击的巨人")
-        # 长度偏好：两个字符串长度都在 5-50 之间，各加 10 分
-        assert score == 10.0  # 长度适中各加 10 分
+        assert score == 0.0
 
     def test_empty_keyword(self, tencent_searcher):
         """Test with empty keyword"""
@@ -290,6 +289,19 @@ class TestCandidateNormalization:
             "https://v.qq.com/x/cover/mzc00200emmamia.html",
             "https://v.qq.com/x/cover/mzc002006wc0rx0.html",
         }
+
+    def test_tencent_candidates_skip_unrelated_titles_even_if_metadata_is_valid(self):
+        searcher = TencentSearcher()
+
+        results = searcher._build_results_from_candidates(
+            "影视飓风",
+            [
+                {"title": "VIP消息 腾讯视频", "url": "", "cid": "mzc00200emmamia"},
+            ],
+            limit=10,
+        )
+
+        assert results == []
 
     def test_iqiyi_candidates_keep_redirect_urls_when_keyword_matches(self):
         """Iqiyi search pages now expose tvg redirect links instead of old result selectors"""

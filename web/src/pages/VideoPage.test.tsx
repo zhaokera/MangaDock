@@ -60,6 +60,7 @@ vi.mock('../components/DownloadProgress', () => ({
     status,
     contentType,
     idleLabel,
+    onRetry,
   }: {
     status: {
       task_id: string;
@@ -69,9 +70,15 @@ vi.mock('../components/DownloadProgress', () => ({
     } | null;
     contentType: string;
     idleLabel?: string;
+    onRetry?: () => void;
   }) => (
     <div data-testid="download-progress">
       {contentType}:{idleLabel}:{status?.status ?? 'idle'}:{status?.task_id ?? 'none'}:{status?.message ?? 'none'}
+      {status?.status === 'failed' && onRetry && (
+        <button type="button" onClick={onRetry}>
+          重试当前任务
+        </button>
+      )}
     </div>
   ),
 }));
@@ -122,4 +129,41 @@ it('renders active download progress before the search section', async () => {
   const searchInput = screen.getByTestId('search-input');
 
   expect(progress.compareDocumentPosition(searchInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+});
+
+it('retries a failed video task with the last requested url', async () => {
+  const user = userEvent.setup();
+
+  subscribeProgressMock.mockImplementation((taskId: string, onProgress: (status: unknown) => void) => {
+    onProgress({
+      task_id: taskId,
+      status: 'failed',
+      progress: 0,
+      total: 1,
+      message: '下载失败',
+      platform: 'iqiyi',
+      manga_info: null,
+      zip_path: null,
+      error: 'HTTP 403',
+    });
+
+    return vi.fn();
+  });
+
+  render(<VideoPage platforms={videoPlatforms} />);
+
+  await user.click(screen.getByRole('button', { name: '触发下载' }));
+
+  await waitFor(() => {
+    expect(screen.getByRole('button', { name: '重试当前任务' })).toBeInTheDocument();
+  });
+
+  await user.click(screen.getByRole('button', { name: '重试当前任务' }));
+
+  await waitFor(() => {
+    expect(startDownloadMock).toHaveBeenCalledTimes(2);
+  });
+
+  expect(startDownloadMock).toHaveBeenNthCalledWith(1, 'https://example.com/video');
+  expect(startDownloadMock).toHaveBeenNthCalledWith(2, 'https://example.com/video');
 });

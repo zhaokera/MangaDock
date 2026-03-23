@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { HistoryItem, getHistory, getDownloadUrl } from '../api/client';
+import { HistoryItem, clearHistory, deleteHistoryItem, getHistory, getDownloadUrl } from '../api/client';
 import { filterByContentType, type ContentType } from '../lib/contentType';
 
 interface HistoryProps {
@@ -51,6 +51,8 @@ const PLATFORM_CONFIG: Record<string, { name: string; color: string; bg: string 
 const History: React.FC<HistoryProps> = ({ contentType, emptyTitle, emptyHint, allowedPlatforms }) => {
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+  const [clearing, setClearing] = useState(false);
   const isMountedRef = useRef(true);
   const requestIdRef = useRef(0);
 
@@ -134,6 +136,38 @@ const History: React.FC<HistoryProps> = ({ contentType, emptyTitle, emptyHint, a
     return item.platform ? allowedPlatforms.includes(item.platform) : false;
   });
 
+  const handleDelete = async (item: HistoryItem) => {
+    if (!globalThis.confirm(`确认删除这条下载记录吗？`)) {
+      return;
+    }
+
+    try {
+      setDeleting(item.task_id);
+      await deleteHistoryItem(item.task_id);
+      await loadHistory();
+    } catch (error) {
+      console.error('删除历史失败', error);
+    } finally {
+      setDeleting(null);
+    }
+  };
+
+  const handleClear = async () => {
+    if (!globalThis.confirm('确认清空当前历史记录吗？')) {
+      return;
+    }
+
+    try {
+      setClearing(true);
+      await clearHistory(allowedPlatforms);
+      await loadHistory();
+    } catch (error) {
+      console.error('清空历史失败', error);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   return (
     <div className="glass-card rounded-3xl overflow-hidden">
       {/* Header */}
@@ -153,8 +187,18 @@ const History: React.FC<HistoryProps> = ({ contentType, emptyTitle, emptyHint, a
         </div>
 
         {!loading && filteredHistory.length > 0 && (
-          <div className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
-            自动更新
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void handleClear()}
+              disabled={clearing}
+              className="px-3 py-1.5 text-xs font-medium text-rose-500 bg-rose-50 rounded-full hover:bg-rose-100 disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+            >
+              {clearing ? '清空中...' : '清空历史'}
+            </button>
+            <div className="text-xs text-gray-400 bg-gray-100 px-2 py-1 rounded-full">
+              自动更新
+            </div>
           </div>
         )}
       </div>
@@ -228,11 +272,25 @@ const History: React.FC<HistoryProps> = ({ contentType, emptyTitle, emptyHint, a
                       {formatTime(item.created_at)}
                     </span>
 
+                    <button
+                      type="button"
+                      aria-label={`删除 ${item.title}`}
+                      onClick={() => void handleDelete(item)}
+                      disabled={deleting === item.task_id}
+                      className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium text-rose-500
+                                 bg-rose-50 rounded-xl opacity-100 sm:opacity-0 sm:group-hover:opacity-100
+                                 hover:bg-rose-100 disabled:opacity-60 disabled:cursor-not-allowed transition-all duration-200"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 7h12m-9 0V5a1 1 0 011-1h4a1 1 0 011 1v2m-7 0h8m-1 0v11a2 2 0 01-2 2H9a2 2 0 01-2-2V7h10z" />
+                      </svg>
+                      {deleting === item.task_id ? '删除中...' : '删除'}
+                    </button>
+
                     <a
                       href={getDownloadUrl(item.task_id)}
                       className="flex items-center gap-1.5 px-4 py-2 text-sm font-medium text-secondary
-                                 bg-secondary/10 rounded-xl
-                                 opacity-0 group-hover:opacity-100
+                                 bg-secondary/10 rounded-xl opacity-100 sm:opacity-0 sm:group-hover:opacity-100
                                  hover:bg-secondary/20 transition-all duration-200"
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">

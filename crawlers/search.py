@@ -187,11 +187,13 @@ class TencentSearcher(BaseSearcher):
         keyword_lower = keyword.lower()
         title_lower = title.lower()
 
+        if keyword_lower not in title_lower:
+            return 0.0
+
         score = 0.0
 
         # 完全匹配
-        if keyword_lower in title_lower:
-            score += 50.0
+        score += 50.0
 
         # 开头匹配
         if title_lower.startswith(keyword_lower):

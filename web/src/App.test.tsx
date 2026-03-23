@@ -100,7 +100,7 @@ it('clears video progress after navigating back to manga', async () => {
   const scoped = within(container);
 
   await user.click(scoped.getAllByRole('button', { name: '触发下载' })[0]);
-  expect(await scoped.findByText('下载中')).toBeInTheDocument();
+  expect((await scoped.findAllByText('下载中')).length).toBeGreaterThan(0);
 
   await user.click(scoped.getAllByRole('link', { name: '漫画下载' })[0]);
 
@@ -127,4 +127,74 @@ it('hides a mismatched task in DownloadProgress', () => {
 
   expect(container).toBeEmptyDOMElement();
   expect(within(container).queryByText('下载中')).not.toBeInTheDocument();
+});
+
+it('shows completion actions and lets the user clear the completed task', async () => {
+  const user = userEvent.setup();
+  const handleReset = vi.fn();
+
+  render(
+    <DownloadProgress
+      contentType="video"
+      onReset={handleReset}
+      status={{
+        task_id: 'task-9',
+        status: 'completed',
+        progress: 1,
+        total: 1,
+        message: '下载完成',
+        platform: 'tencent',
+        manga_info: {
+          title: '影视飓风',
+          chapter: '第 1 集',
+        },
+        zip_path: '/downloads/video.zip',
+        error: null,
+      }}
+    />,
+  );
+
+  expect(screen.getByRole('link', { name: '下载 ZIP 文件' })).toHaveAttribute('href', '/api/files/task-9');
+  expect(screen.getByRole('button', { name: '复制下载链接' })).toBeInTheDocument();
+  expect(screen.getByText('video.zip')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: '继续下载下一条' }));
+
+  expect(handleReset).toHaveBeenCalledTimes(1);
+});
+
+it('shows failure actions and lets the user retry or copy the error', async () => {
+  const user = userEvent.setup();
+  const handleRetry = vi.fn();
+  const clipboardSpy = vi.spyOn(navigator.clipboard, 'writeText');
+
+  render(
+    <DownloadProgress
+      contentType="video"
+      onRetry={handleRetry}
+      status={{
+        task_id: 'task-fail-1',
+        status: 'failed',
+        progress: 0,
+        total: 1,
+        message: '视频下载失败',
+        platform: 'iqiyi',
+        manga_info: {
+          title: '影视飓风',
+          chapter: '第 1 集',
+        },
+        zip_path: null,
+        error: '视频下载失败: HTTP 403',
+      }}
+    />,
+  );
+
+  expect(screen.getByRole('button', { name: '重试下载' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '复制错误信息' })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: '重试下载' }));
+  expect(handleRetry).toHaveBeenCalledTimes(1);
+
+  await user.click(screen.getByRole('button', { name: '复制错误信息' }));
+  expect(clipboardSpy).toHaveBeenCalledWith('视频下载失败: HTTP 403');
 });
