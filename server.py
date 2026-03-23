@@ -14,9 +14,8 @@ from pathlib import Path
 from typing import Optional
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI
     from fastapi.middleware.cors import CORSMiddleware
-    from pydantic import BaseModel
 except ImportError:
     print("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
@@ -53,6 +52,7 @@ from crawlers.registry import get_crawler_by_platform
 from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
+from routes.parse import build_parse_router
 from routes.platforms import router as platforms_router
 from routes.queue import build_queue_router
 from routes.resume import build_resume_router
@@ -65,6 +65,7 @@ from services.browser_pool import (
     schedule_browser_cleanup,
 )
 from services.downloader import MangaDownloader, add_history_item
+from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
@@ -72,13 +73,6 @@ import config
 
 # 加载配置
 CONFIG = config.get_config()
-
-
-# ============== 数据模型 ==============
-
-class DownloadRequest(BaseModel):
-    url: str
-
 
 class DownloadTask:
     def __init__(self, task_id: str, url: str, platform: str = ""):
@@ -207,6 +201,11 @@ app.include_router(
         get_manga_searcher=lambda platform: get_manga_searcher(platform),
     )
 )
+app.include_router(
+    build_parse_router(
+        get_crawler_for_url=lambda url: get_crawler(url),
+    )
+)
 
 
 # ============== API 端点 ==============
@@ -218,29 +217,6 @@ async def root():
         "version": "2.0",
         "description": "支持多平台漫画下载"
     }
-
-
-@app.post("/api/parse")
-async def parse_url(request: DownloadRequest):
-    """解析 URL 返回平台和漫画信息"""
-    url = request.url
-
-    try:
-        crawler = get_crawler(url)
-        info = await crawler.get_info(url)
-
-        return {
-            "platform": crawler.PLATFORM_NAME,
-            "platform_name": crawler.PLATFORM_DISPLAY_NAME,
-            "comic_id": info.comic_id,
-            "episode_id": info.episode_id,
-            "url": url
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"解析失败: {e}")
-
 
 # ============== 认证 API ==============
 
@@ -332,83 +308,35 @@ if __name__ == "__main__":
     parser.add_argument("--download", "-d", help="下载视频（通过 URL）")
     args = parser.parse_args()
 
-    # 搜索模式
     if args.search:
-        async def run_search():
-            keyword = args.search
-            platform = args.platform
-            limit = args.limit
+        raise SystemExit(
+            asyncio.run(
+                run_search_cli(
+                    keyword=args.search,
+                    platform=args.platform,
+                    limit=args.limit,
+                    get_searcher=get_searcher,
+                    search_all_platforms=search_all_platforms,
+                )
+            )
+        )
 
-            try:
-                if platform:
-                    searcher = get_searcher(platform)
-                    if searcher is None:
-                        print(f"错误: 不支持的平台: {platform}")
-                        print("支持的平台: tencent, iqiyi, youku, mango")
-                        return
-                    results = await searcher.search(keyword, limit=limit)
-                else:
-                    results = await search_all_platforms(keyword, limit_per_platform=limit)
-
-                if not results:
-                    print("未找到结果")
-                    return
-
-                print(f"\n找到 {len(results)} 个结果:")
-                for i, r in enumerate(results, 1):
-                    print(f"\n{i}. {r.title}")
-                    print(f"   平台: {r.platform_display}")
-                    print(f"   匹配度: {r.score:.1f}")
-                    print(f"   URL: {r.url}")
-
-            except Exception as e:
-                print(f"搜索失败: {e}")
-
-        asyncio.run(run_search())
-        exit(0)
-
-    # 下载模式
     if args.download:
-        async def run_download():
-            url = args.download
-            try:
-                crawler = get_crawler(url)
-                info = await crawler.get_info(url)
-                print(f"准备下载: {info.title}")
+        raise SystemExit(
+            asyncio.run(
+                run_download_cli(
+                    url=args.download,
+                    downloads_dir=str(DOWNLOADS_DIR),
+                    get_crawler_for_url=get_crawler,
+                )
+            )
+        )
 
-                # 执行下载
-                output = await crawler.download(url, str(DOWNLOADS_DIR))
-                print(f"下载完成: {output}")
-            except Exception as e:
-                print(f"下载失败: {e}")
-
-        asyncio.run(run_download())
-        exit(0)
-
-    # 启动服务模式
-    logger.info("启动漫画下载服务...")
-
-    logger.info("启动漫画下载服务...")
-    logger.info(f"API: http://{CONFIG.host}:{CONFIG.port}")
-    logger.info(f"文档: http://{CONFIG.host}:{CONFIG.port}/docs")
-
-    # 显示支持的平台
-    platforms = list_supported_platforms()
-    logger.info("支持的平台:")
-    for p in platforms:
-        logger.info(f"  - {p['display_name']}")
-
-    # 显示配置信息
-    logger.info(f"配置:")
-    logger.info(f"  - 下载目录: {CONFIG.download.output_dir}")
-    logger.info(f"  - 并发数: {CONFIG.download.concurrency}")
-    logger.info(f"  - 日志级别: {CONFIG.logging.level}")
-
-    # 显示浏览器池配置
-    cleanup_interval = getattr(CONFIG.crawler, 'browser_cleanup_interval', 60)
-    idle_timeout = getattr(CONFIG.crawler, 'browser_idle_timeout', 300)
-    logger.info(f"  - 浏览器池清理间隔: {cleanup_interval}s")
-    logger.info(f"  - 浏览器空闲超时: {idle_timeout}s")
+    log_startup_summary(
+        logger=logger,
+        config=CONFIG,
+        platforms=list_supported_platforms(),
+    )
 
     # 启动配置监听器（热重载）
     import config as server_config
