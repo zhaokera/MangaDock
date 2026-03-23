@@ -1,15 +1,13 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback } from 'react';
 import {
   type Platform,
   type SearchResult,
-  type TaskStatus,
-  startDownload,
-  subscribeProgress,
 } from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
 import History from '../components/History';
 import SearchInput from '../components/SearchInput';
 import UrlInput from '../components/UrlInput';
+import { useDownloadTask } from '../hooks/useDownloadTask';
 
 interface DlExpoPageProps {
   platforms: Platform[];
@@ -19,54 +17,24 @@ interface DlExpoPageProps {
 const DL_EXPO_PLATFORM = 'dl_expo';
 
 const DlExpoPage: React.FC<DlExpoPageProps> = ({ platforms, allPlatforms = platforms }) => {
-  const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
-  const [downloading, setDownloading] = useState(false);
-  const [lastRequestedUrl, setLastRequestedUrl] = useState<string | null>(null);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-
-  useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.();
-    };
-  }, []);
+  const {
+    currentTask,
+    downloading,
+    retry,
+    reset,
+    startForUrl,
+  } = useDownloadTask({
+    pendingMessage: '准备下载糯米影视资源...',
+    shouldAcceptStatus: (status) => !status.platform || status.platform === DL_EXPO_PLATFORM,
+    onStartError: (error) => {
+      console.error('糯米影视下载失败', error);
+      alert(error instanceof Error ? error.message : '下载失败');
+    },
+  });
 
   const beginDownload = useCallback(async (url: string) => {
-    try {
-      setDownloading(true);
-      setCurrentTask(null);
-      setLastRequestedUrl(url);
-      unsubscribeRef.current?.();
-      unsubscribeRef.current = null;
-
-      const result = await startDownload(url);
-      setCurrentTask({
-        task_id: result.task_id,
-        status: 'pending',
-        progress: 0,
-        total: 0,
-        message: '准备下载糯米影视资源...',
-        platform: result.platform,
-        manga_info: null,
-        zip_path: null,
-        error: null,
-      });
-
-      unsubscribeRef.current = subscribeProgress(result.task_id, (status) => {
-        if (status.platform && status.platform !== DL_EXPO_PLATFORM) {
-          return;
-        }
-
-        setCurrentTask(status);
-        if (status.status === 'completed' || status.status === 'failed') {
-          setDownloading(false);
-        }
-      });
-    } catch (error) {
-      console.error('糯米影视下载失败', error);
-      setDownloading(false);
-      alert(error instanceof Error ? error.message : '下载失败');
-    }
-  }, []);
+    await startForUrl(url);
+  }, [startForUrl]);
 
   const handleSearchResultSelect = useCallback(async (result: SearchResult) => {
     await beginDownload(result.url);
@@ -109,11 +77,8 @@ const DlExpoPage: React.FC<DlExpoPageProps> = ({ platforms, allPlatforms = platf
             status={currentTask}
             contentType="video"
             idleLabel="糯米影视下载进度"
-            onReset={() => {
-              setCurrentTask(null);
-              setDownloading(false);
-            }}
-            onRetry={lastRequestedUrl ? () => beginDownload(lastRequestedUrl) : undefined}
+            onReset={reset}
+            onRetry={retry}
           />
         </section>
       )}

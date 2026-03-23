@@ -1,9 +1,10 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { type Platform, type SearchResult, type TaskStatus, startDownload, subscribeProgress } from '../api/client';
+import React, { useCallback } from 'react';
+import { type Platform, type SearchResult } from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
 import History from '../components/History';
 import SearchInput from '../components/SearchInput';
 import UrlInput from '../components/UrlInput';
+import { useDownloadTask } from '../hooks/useDownloadTask';
 
 interface VideoPageProps {
   platforms: Platform[];
@@ -27,71 +28,28 @@ const getPlatformColor = (platform?: string) => {
 };
 
 const VideoPage: React.FC<VideoPageProps> = ({ platforms, allPlatforms = platforms }) => {
-  const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
-  const [lastRequestedUrl, setLastRequestedUrl] = useState<string | null>(null);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
-  const downloading = currentTask?.status === 'pending' || currentTask?.status === 'downloading';
-
-  useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.();
-    };
-  }, []);
-
-  const handleSearchResultSelect = useCallback(async (result: SearchResult) => {
-    try {
-      setCurrentTask(null);
-      unsubscribeRef.current?.();
-      setLastRequestedUrl(result.url);
-
-      const downloadResult = await startDownload(result.url);
-      setCurrentTask({
-        task_id: downloadResult.task_id,
-        status: 'pending',
-        progress: 0,
-        total: 0,
-        message: '准备下载视频...',
-        platform: downloadResult.platform,
-        manga_info: null,
-        zip_path: null,
-        error: null,
-      });
-      unsubscribeRef.current = subscribeProgress(downloadResult.task_id, (status) => {
-        setCurrentTask(status);
-      });
-    } catch (error) {
+  const {
+    currentTask,
+    downloading,
+    retry,
+    reset,
+    startForUrl,
+  } = useDownloadTask({
+    pendingMessage: '准备下载视频...',
+    onStartError: (error) => {
       console.error('下载失败', error);
       alert(error instanceof Error ? error.message : '下载失败');
-    }
-  }, []);
+    },
+  });
+
+  const handleSearchResultSelect = useCallback(async (result: SearchResult) => {
+    await startForUrl(result.url);
+  }, [startForUrl]);
 
   // 处理直接输入 URL 下载
   const handleDirectDownload = useCallback(async (url: string) => {
-    try {
-      setCurrentTask(null);
-      unsubscribeRef.current?.();
-      setLastRequestedUrl(url);
-
-      const downloadResult = await startDownload(url);
-      setCurrentTask({
-        task_id: downloadResult.task_id,
-        status: 'pending',
-        progress: 0,
-        total: 0,
-        message: '准备下载视频...',
-        platform: downloadResult.platform,
-        manga_info: null,
-        zip_path: null,
-        error: null,
-      });
-      unsubscribeRef.current = subscribeProgress(downloadResult.task_id, (status) => {
-        setCurrentTask(status);
-      });
-    } catch (error) {
-      console.error('下载失败', error);
-      alert(error instanceof Error ? error.message : '下载失败');
-    }
-  }, []);
+    await startForUrl(url);
+  }, [startForUrl]);
 
   return (
     <>
@@ -128,8 +86,8 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms, allPlatforms = platfor
             status={currentTask}
             contentType="video"
             idleLabel="视频下载进度"
-            onReset={() => setCurrentTask(null)}
-            onRetry={lastRequestedUrl ? () => handleDirectDownload(lastRequestedUrl) : undefined}
+            onReset={reset}
+            onRetry={retry}
           />
         </section>
       )}

@@ -1,14 +1,11 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import {
   getMangaChapters,
   searchManga,
   startBatchDownload,
-  startDownload,
-  subscribeProgress,
   type MangaChapterCatalog,
   type MangaSearchResult,
   type Platform,
-  type TaskStatus,
 } from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
 import MangaChapterPicker from '../components/MangaChapterPicker';
@@ -17,6 +14,7 @@ import MangaSearchInput from '../components/MangaSearchInput';
 import MangaSearchResults from '../components/MangaSearchResults';
 import History from '../components/History';
 import UrlInput from '../components/UrlInput';
+import { useDownloadTask } from '../hooks/useDownloadTask';
 
 interface MangaPageProps {
   platforms: Platform[];
@@ -37,8 +35,6 @@ const getPlatformColor = (platform?: string) => {
 };
 
 const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platforms }) => {
-  const [downloading, setDownloading] = useState(false);
-  const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
   const [searchAttempted, setSearchAttempted] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -48,15 +44,21 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platfor
   const [selectedChapterUrls, setSelectedChapterUrls] = useState<string[]>([]);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [confirmPending, setConfirmPending] = useState(false);
-  const unsubscribeRef = useRef<(() => void) | null>(null);
   const searchRequestIdRef = useRef(0);
   const chapterRequestIdRef = useRef(0);
-
-  useEffect(() => {
-    return () => {
-      unsubscribeRef.current?.();
-    };
-  }, []);
+  const {
+    currentTask,
+    downloading,
+    reset,
+    startForUrl,
+    trackTask,
+  } = useDownloadTask({
+    pendingMessage: '准备下载漫画...',
+    onStartError: (error) => {
+      console.error('下载失败', error);
+      alert(error instanceof Error ? error.message : '下载失败');
+    },
+  });
 
   const resetChapterFlow = useCallback(() => {
     setChapterLoading(false);
@@ -161,10 +163,7 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platfor
 
   const handleBatchDownload = useCallback(async (urls: string[]) => {
     try {
-      setDownloading(true);
-      setCurrentTask(null);
-      unsubscribeRef.current?.();
-      unsubscribeRef.current = null;
+      reset();
 
       const result = await startBatchDownload(urls);
 
@@ -177,22 +176,26 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platfor
       // Batch mode intentionally tracks only the first successful task in the single-progress UI.
       const firstSuccessfulTaskId = result.results.find((item) => item.task_id)?.task_id;
       if (!firstSuccessfulTaskId) {
-        setDownloading(false);
         return;
       }
 
-      unsubscribeRef.current = subscribeProgress(firstSuccessfulTaskId, (status) => {
-        setCurrentTask(status);
-        if (status.status === 'completed' || status.status === 'failed') {
-          setDownloading(false);
-        }
+      const firstSuccessfulTask = result.results.find((item) => item.task_id === firstSuccessfulTaskId);
+      trackTask(firstSuccessfulTaskId, {
+        task_id: firstSuccessfulTaskId,
+        status: 'pending',
+        progress: 0,
+        total: 0,
+        message: '准备下载漫画...',
+        platform: firstSuccessfulTask?.platform,
+        manga_info: null,
+        zip_path: null,
+        error: null,
       });
     } catch (error) {
       console.error('批量下载失败', error);
-      setDownloading(false);
       alert(error instanceof Error ? error.message : '批量下载失败');
     }
-  }, []);
+  }, [reset, trackTask]);
 
   const handleConfirmDownload = useCallback(async () => {
     if (selectedChapterUrls.length === 0) {
@@ -210,25 +213,8 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platfor
   }, [handleBatchDownload, selectedChapterUrls]);
 
   const handleDownload = useCallback(async (url: string) => {
-    try {
-      setDownloading(true);
-      setCurrentTask(null);
-      unsubscribeRef.current?.();
-
-      const result = await startDownload(url);
-
-      unsubscribeRef.current = subscribeProgress(result.task_id, (status) => {
-        setCurrentTask(status);
-        if (status.status === 'completed' || status.status === 'failed') {
-          setDownloading(false);
-        }
-      });
-    } catch (error) {
-      console.error('下载失败', error);
-      setDownloading(false);
-      alert(error instanceof Error ? error.message : '下载失败');
-    }
-  }, []);
+    await startForUrl(url);
+  }, [startForUrl]);
 
   return (
     <>
@@ -370,10 +356,7 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platfor
             status={currentTask}
             contentType="manga"
             idleLabel="漫画下载进度"
-            onReset={() => {
-              setCurrentTask(null);
-              setDownloading(false);
-            }}
+            onReset={reset}
           />
         </section>
       )}
