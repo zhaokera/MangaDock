@@ -23,7 +23,7 @@ try:
     from fastapi.responses import FileResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError:
-    logger.error("请先安装 fastapi: pip install fastapi uvicorn")
+    print("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
 
 # 设置日志
@@ -42,7 +42,6 @@ logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
 # 导入爬虫模块
 from crawlers import (
     get_crawler,
-    get_supported_platforms,
     BaseCrawler,
     init_db,
     TaskRecord,
@@ -59,13 +58,10 @@ from crawlers import (
 from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
 from crawlers.auth import get_auth_manager, AuthManager
 from crawlers.resume import get_resume_manager, ResumeInfo
-from crawlers.registry import get_crawler_by_platform
 from crawlers.search import search_all_platforms, get_searcher, SearchResult
-from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
-from crawlers.auth import get_auth_manager, AuthManager
-from crawlers.resume import get_resume_manager, ResumeInfo
-from crawlers.registry import get_crawler_by_platform
 from crawlers.manga_search import get_manga_searcher
+from routes.platforms import router as platforms_router
+from services.platforms import list_supported_platforms
 
 # 导入配置管理
 import config
@@ -82,13 +78,6 @@ class DownloadRequest(BaseModel):
 
 class BatchDownloadRequest(BaseModel):
     urls: List[str]
-
-
-class PlatformInfo(BaseModel):
-    name: str
-    display_name: str
-    patterns: list[str]
-    type: str
 
 
 class SearchRequest(BaseModel):
@@ -144,6 +133,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.include_router(platforms_router)
 
 # 任务存储
 tasks: dict[str, DownloadTask] = {}
@@ -603,12 +593,6 @@ async def root():
         "version": "2.0",
         "description": "支持多平台漫画下载"
     }
-
-
-@app.get("/api/platforms")
-async def list_platforms():
-    """获取支持的平台列表"""
-    return {"platforms": get_supported_platforms()}
 
 
 @app.post("/api/parse")
@@ -1205,24 +1189,6 @@ async def auth_status(platform: str):
         }
 
 
-@app.get("/api/auth/platforms")
-async def auth_platforms():
-    """获取支持认证的平台列表"""
-    platforms = get_supported_platforms()
-    supported = []
-
-    for p in platforms:
-        platform_name = p['name']
-        crawler = get_crawler_by_platform(platform_name)
-        if crawler and hasattr(crawler, 'login') and callable(getattr(crawler, 'login')):
-            supported.append({
-                'name': platform_name,
-                'display_name': p['display_name'],
-            })
-
-    return {"platforms": supported, "total": len(supported)}
-
-
 # ============== 断点续传 API ==============
 
 class ResumeStatus(BaseModel):
@@ -1439,7 +1405,7 @@ if __name__ == "__main__":
     logger.info(f"文档: http://{CONFIG.host}:{CONFIG.port}/docs")
 
     # 显示支持的平台
-    platforms = get_supported_platforms()
+    platforms = list_supported_platforms()
     logger.info("支持的平台:")
     for p in platforms:
         logger.info(f"  - {p['display_name']}")

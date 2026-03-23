@@ -5,6 +5,7 @@ import asyncio
 import tempfile
 import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, AsyncMock, patch
 
 from crawlers.auth import (
@@ -186,6 +187,31 @@ class TestAuthManagerIntegration:
 
 class TestAuthEndpoints:
     """认证 API 端点测试"""
+
+    def test_auth_platforms_endpoint_returns_supported_platforms(self):
+        """测试认证平台列表接口返回可认证平台"""
+        from server import app
+        from fastapi.testclient import TestClient
+
+        client = TestClient(app)
+
+        with patch("services.platforms.get_supported_platforms", return_value=[
+            {"name": "manhuagui", "display_name": "漫画柜", "patterns": [], "type": "manga"},
+            {"name": "tencent", "display_name": "腾讯视频", "patterns": [], "type": "video"},
+        ]), patch(
+            "services.platforms.get_crawler_by_platform",
+            side_effect=[
+                SimpleNamespace(login=lambda credentials: credentials),
+                SimpleNamespace(),
+            ],
+        ):
+            response = client.get("/api/auth/platforms")
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "platforms": [{"name": "manhuagui", "display_name": "漫画柜"}],
+            "total": 1,
+        }
 
     def test_auth_platforms_endpoint_exists(self):
         """测试认证平台列表端点存在"""
