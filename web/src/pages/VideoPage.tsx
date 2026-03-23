@@ -1,8 +1,9 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { type Platform, type SearchResult, type TaskStatus, startDownload, subscribeProgress } from '../api/client';
+import { getPlatforms, type Platform, type SearchResult, type TaskStatus, startDownload, subscribeProgress } from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
 import History from '../components/History';
 import SearchInput from '../components/SearchInput';
+import UrlInput from '../components/UrlInput';
 
 interface VideoPageProps {
   platforms: Platform[];
@@ -26,9 +27,14 @@ const getPlatformColor = (platform?: string) => {
 
 const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
   const unsubscribeRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
+    getPlatforms()
+      .then((data) => setAllPlatforms(data.platforms || []))
+      .catch(console.error);
     return () => {
       unsubscribeRef.current?.();
     };
@@ -40,6 +46,33 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
       unsubscribeRef.current?.();
 
       const downloadResult = await startDownload(result.url);
+      setCurrentTask({
+        task_id: downloadResult.task_id,
+        status: 'pending',
+        progress: 0,
+        total: 0,
+        message: '准备下载视频...',
+        platform: downloadResult.platform,
+        manga_info: null,
+        zip_path: null,
+        error: null,
+      });
+      unsubscribeRef.current = subscribeProgress(downloadResult.task_id, (status) => {
+        setCurrentTask(status);
+      });
+    } catch (error) {
+      console.error('下载失败', error);
+      alert(error instanceof Error ? error.message : '下载失败');
+    }
+  }, []);
+
+  // 处理直接输入 URL 下载
+  const handleDirectDownload = useCallback(async (url: string) => {
+    try {
+      setCurrentTask(null);
+      unsubscribeRef.current?.();
+
+      const downloadResult = await startDownload(url);
       setCurrentTask({
         task_id: downloadResult.task_id,
         status: 'pending',
@@ -104,6 +137,31 @@ const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
           platforms={platforms}
           onSearch={() => {}}
           onResultSelect={handleSearchResultSelect}
+        />
+      </section>
+
+      <section className="glass-card rounded-3xl p-6 animate-[fadeIn_0.3s_ease]">
+        <div className="flex items-center gap-3 mb-4">
+          <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-primary/10 to-secondary/10 flex items-center justify-center">
+            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={2}
+                d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1"
+              />
+            </svg>
+          </div>
+          <h2 className="font-bold text-gray-800">输入链接</h2>
+        </div>
+        <UrlInput
+          contentType="video"
+          onDownload={handleDirectDownload}
+          onBatchDownload={undefined}
+          disabled={downloading}
+          platforms={platforms}
+          allPlatforms={allPlatforms}
+          exampleUrl="https://v.qq.com/x/cover/sdp001000ape3w6/"
         />
       </section>
 

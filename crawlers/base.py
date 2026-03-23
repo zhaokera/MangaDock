@@ -191,7 +191,9 @@ class BaseCrawler(ABC):
         """
         import re
         for pattern in cls.URL_PATTERNS:
-            if re.search(pattern, url):
+            match = re.search(pattern, url)
+            if match:
+                logger.debug(f"URL {url} 匹配模式 {pattern}")
                 return True
         return False
 

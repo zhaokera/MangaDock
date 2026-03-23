@@ -46,8 +46,14 @@ def get_crawler(url: str) -> BaseCrawler:
     Raises:
         ValueError: 不支持的 URL
     """
+    logger.info(f"开始匹配爬虫 for URL: {url}")
+    logger.info(f"已注册的爬虫数量: {len(_crawlers)}")
+
     for crawler_class in _crawlers.values():
-        if crawler_class.can_handle(url):
+        can_handle_result = crawler_class.can_handle(url)
+        logger.debug(f"检查爬虫 {crawler_class.PLATFORM_NAME}: can_handle={can_handle_result}")
+        if can_handle_result:
+            logger.info(f"匹配到爬虫: {crawler_class.PLATFORM_NAME}")
             return crawler_class()
 
     # 构建支持的域名列表
@@ -57,7 +63,10 @@ def get_crawler(url: str) -> BaseCrawler:
             # 提取域名提示
             if "manhuagui" in pattern:
                 supported.append("漫画柜 (manhuagui.com)")
+            elif "v.qq.com" in pattern:
+                supported.append("腾讯视频 (v.qq.com)")
 
+    logger.error(f"未匹配到爬虫 for URL: {url}, supported={supported}")
     raise ValueError(f"不支持的 URL: {url}\n支持的平台: {', '.join(set(supported)) or '暂无'}")
 
 

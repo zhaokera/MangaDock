@@ -32,7 +32,12 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+# 获取所有相关 logger
 logger = logging.getLogger(__name__)
+logging.getLogger("crawlers").setLevel(logging.INFO)
+logging.getLogger("crawlers.tencent").setLevel(logging.INFO)
+logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
 
 # 导入爬虫模块
 from crawlers import (
@@ -724,11 +729,15 @@ async def get_manga_chapters(url: str, platform: str):
 async def start_download(request: DownloadRequest, background_tasks: BackgroundTasks):
     """启动下载任务"""
     url = request.url
+    logger.info(f"收到下载请求: url={url}")
 
     # 验证 URL 并获取爬虫
     try:
+        logger.info(f"尝试获取爬虫 for URL: {url}")
         crawler = get_crawler(url)
+        logger.info(f"成功获取爬虫: {crawler.PLATFORM_NAME}")
     except ValueError as e:
+        logger.error(f"获取爬虫失败: {e}")
         raise HTTPException(status_code=400, detail=str(e))
 
     # 创建任务
