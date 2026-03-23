@@ -16,7 +16,7 @@ from typing import Optional, List
 from dataclasses import dataclass, field, asdict
 
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
+    from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel
 except ImportError:
@@ -58,7 +58,9 @@ from crawlers.resume import get_resume_manager, ResumeInfo
 from crawlers.search import search_all_platforms, get_searcher, SearchResult
 from crawlers.manga_search import get_manga_searcher
 from routes.downloads import build_download_router
+from routes.history import build_history_router
 from routes.platforms import router as platforms_router
+from routes.queue import build_queue_router
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
@@ -88,10 +90,6 @@ class SearchResponse(BaseModel):
     results: List[dict]
     total: int
     platform: Optional[str] = None
-
-
-class ClearHistoryRequest(BaseModel):
-    platforms: Optional[List[str]] = None
 
 
 class MangaInfoResponse(BaseModel):
@@ -592,6 +590,26 @@ app.include_router(
         get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
     )
 )
+app.include_router(
+    build_history_router(
+        get_history_tasks=lambda limit: get_history_tasks(limit=limit),
+        get_history_max_items=lambda: (
+            config.get_config().history.max_items
+            if config.get_config().history.max_items > 0
+            else 100
+        ),
+        get_task_record=lambda task_id: get_task(task_id),
+        delete_task_record=lambda task_id: delete_task(task_id),
+        delete_history_tasks=lambda platforms: delete_history_tasks(platforms),
+    )
+)
+app.include_router(
+    build_queue_router(
+        download_queue=_download_queue,
+        priorities=_download_queue_priority,
+        queue_lock=_download_queue_lock,
+    )
+)
 
 
 # ============== API 端点 ==============
@@ -716,122 +734,6 @@ async def get_manga_chapters(url: str, platform: str):
         _raise_manga_not_implemented(platform, "章节目录")
 
     return payload.to_dict()
-
-
-@app.get("/api/history")
-async def get_history(page: int = 1, page_size: int = 50):
-    """获取下载历史（支持分页，从数据库）"""
-    history_config = config.get_config().history
-    max_items = history_config.max_items if history_config.max_items > 0 else 100
-
-    # 分页参数验证
-    if page < 1:
-        page = 1
-    if page_size < 1:
-        page_size = 50
-
-    # 限制最大页大小，防止过多数据传输
-    page_size = min(page_size, 200)
-
-    # 从数据库获取历史任务
-    all_history = get_history_tasks(limit=max_items)
-    total = len(all_history)
-
-    # 计算分页索引
-    start = (page - 1) * page_size
-    end = start + page_size
-    page_tasks = all_history[start:end]
-
-    return {
-        "history": [t.to_dict() for t in page_tasks],
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "has_more": end < total
-    }
-
-
-@app.delete("/api/history/{task_id}")
-async def delete_history_item(task_id: str):
-    """删除单条历史记录"""
-    task = get_task(task_id)
-    if not task or task.status not in {"completed", "failed"}:
-        raise HTTPException(status_code=404, detail="历史记录不存在")
-
-    deleted = delete_task(task_id)
-    return {"deleted": deleted, "task_id": task_id}
-
-
-@app.delete("/api/history")
-async def clear_history(request: ClearHistoryRequest = Body(default=ClearHistoryRequest())):
-    """清空历史记录"""
-    deleted = delete_history_tasks(request.platforms)
-    return {"deleted": deleted}
-
-
-@app.post("/api/queue/pause")
-async def pause_download(task_id: str):
-    """暂停下载任务"""
-    async with _download_queue_lock:
-        if task_id in _download_queue:
-            task = _download_queue[task_id]
-            task.status = "paused"
-            return {"status": "paused", "task_id": task_id}
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-
-@app.post("/api/queue/resume")
-async def resume_download(task_id: str):
-    """恢复下载任务"""
-    async with _download_queue_lock:
-        if task_id in _download_queue:
-            task = _download_queue[task_id]
-            task.status = "pending"
-            return {"status": "resumed", "task_id": task_id}
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-
-@app.delete("/api/queue/{task_id}")
-async def remove_from_queue(task_id: str):
-    """从下载队列移除任务"""
-    async with _download_queue_lock:
-        if task_id in _download_queue:
-            del _download_queue[task_id]
-            del _download_queue_priority[task_id]
-            return {"status": "removed", "task_id": task_id}
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-
-@app.get("/api/queue")
-async def get_download_queue():
-    """获取下载队列"""
-    async with _download_queue_lock:
-        queue_items = []
-        for tid, task in _download_queue.items():
-            queue_items.append({
-                "task_id": tid,
-                "url": task.url,
-                "platform": task.platform,
-                "status": task.status,
-                "priority": _download_queue_priority.get(tid, 0),
-                "position": len(queue_items),
-            })
-        # 按优先级排序
-        queue_items.sort(key=lambda x: (-x["priority"], x["position"]))
-        return {"queue": queue_items, "total": len(queue_items)}
-
-
-@app.post("/api/queue/priority")
-async def update_priority(request: dict):
-    """更新任务优先级"""
-    task_id = request.get("task_id")
-    priority = request.get("priority", 0)
-
-    async with _download_queue_lock:
-        if task_id in _download_queue:
-            _download_queue_priority[task_id] = priority
-            return {"status": "updated", "task_id": task_id, "priority": priority}
-        raise HTTPException(status_code=404, detail="任务不存在")
 
 
 # ============== 认证 API ==============
