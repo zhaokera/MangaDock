@@ -6,11 +6,9 @@ FastAPI 后端 + SSE 进度推送
 """
 
 import asyncio
-import json
 import os
 import re
 import zipfile
-import uuid
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,7 +18,6 @@ from dataclasses import dataclass, field, asdict
 try:
     from fastapi import FastAPI, HTTPException, BackgroundTasks, Body, Query
     from fastapi.middleware.cors import CORSMiddleware
-    from fastapi.responses import FileResponse, StreamingResponse
     from pydantic import BaseModel
 except ImportError:
     print("请先安装 fastapi: pip install fastapi uvicorn")
@@ -60,6 +57,7 @@ from crawlers.auth import get_auth_manager, AuthManager
 from crawlers.resume import get_resume_manager, ResumeInfo
 from crawlers.search import search_all_platforms, get_searcher, SearchResult
 from crawlers.manga_search import get_manga_searcher
+from routes.downloads import build_download_router
 from routes.platforms import router as platforms_router
 from services.platforms import list_supported_platforms
 
@@ -584,6 +582,18 @@ class MangaDownloader:
             await add_history_item(history_item)
 
 
+app.include_router(
+    build_download_router(
+        get_crawler_for_url=lambda url: get_crawler(url),
+        create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
+        create_downloader=lambda task: MangaDownloader(task),
+        get_task_record=lambda task_id: get_task(task_id),
+        task_last_sse_state=task_last_sse_state,
+        get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
+    )
+)
+
+
 # ============== API 端点 ==============
 
 @app.get("/")
@@ -706,277 +716,6 @@ async def get_manga_chapters(url: str, platform: str):
         _raise_manga_not_implemented(platform, "章节目录")
 
     return payload.to_dict()
-
-
-@app.post("/api/download")
-async def start_download(request: DownloadRequest, background_tasks: BackgroundTasks):
-    """启动下载任务"""
-    url = request.url
-    logger.info(f"收到下载请求: url={url}")
-
-    # 验证 URL 并获取爬虫
-    try:
-        logger.info(f"尝试获取爬虫 for URL: {url}")
-        crawler = get_crawler(url)
-        logger.info(f"成功获取爬虫: {crawler.PLATFORM_NAME}")
-    except ValueError as e:
-        logger.error(f"获取爬虫失败: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-    # 创建任务
-    task_id = str(uuid.uuid4())[:8]
-    task = DownloadTask(task_id, url, platform=crawler.PLATFORM_NAME)
-    save_task(TaskRecord(
-        task_id=task.task_id,
-        url=task.url,
-        platform=task.platform,
-        status="pending",
-        message="任务已创建",
-        created_at=task.created_at.isoformat(),
-        updated_at=datetime.now().isoformat(),
-    ))
-
-    # 后台执行下载
-    downloader = MangaDownloader(task)
-    background_tasks.add_task(downloader.run)
-
-    return {
-        "task_id": task_id,
-        "status": "pending",
-        "platform": crawler.PLATFORM_NAME,
-        "message": "任务已创建"
-    }
-
-
-@app.post("/api/batch-download")
-async def start_batch_download(request: BatchDownloadRequest, background_tasks: BackgroundTasks):
-    """批量下载 - 一次下载多个漫画"""
-    urls = request.urls
-
-    if not urls or len(urls) == 0:
-        raise HTTPException(status_code=400, detail="至少需要提供一个 URL")
-
-    if len(urls) > 20:
-        raise HTTPException(status_code=400, detail="单次最多支持 20 个 URL")
-
-    # 验证所有 URL 并获取爬虫
-    tasks_info = []
-    for url in urls:
-        try:
-            crawler = get_crawler(url)
-            tasks_info.append({
-                "url": url,
-                "platform": crawler.PLATFORM_NAME,
-                "crawler": crawler
-            })
-        except ValueError as e:
-            # 记录失败但继续处理其他 URL
-            tasks_info.append({
-                "url": url,
-                "error": str(e),
-                "platform": None
-            })
-
-    # 创建任务并启动下载
-    results = []
-    for info in tasks_info:
-        if info.get("error"):
-            results.append({
-                "url": info["url"],
-                "status": "failed",
-                "error": info["error"]
-            })
-            continue
-
-        task_id = str(uuid.uuid4())[:8]
-        task = DownloadTask(task_id, info["url"], platform=info["platform"])
-        save_task(TaskRecord(
-            task_id=task.task_id,
-            url=task.url,
-            platform=task.platform,
-            status="pending",
-            message="任务已创建",
-            created_at=task.created_at.isoformat(),
-            updated_at=datetime.now().isoformat(),
-        ))
-
-        downloader = MangaDownloader(task)
-        background_tasks.add_task(downloader.run)
-
-        results.append({
-            "url": info["url"],
-            "task_id": task_id,
-            "status": "pending",
-            "platform": info["platform"]
-        })
-
-    return {
-        "total": len(results),
-        "success": sum(1 for r in results if r.get("status") == "pending"),
-        "failed": sum(1 for r in results if r.get("status") == "failed"),
-        "results": results
-    }
-
-
-@app.get("/api/status/{task_id}")
-async def get_status(task_id: str):
-    """获取任务状态（从数据库）"""
-    # 首先检查内存中的任务（正在进行中）
-    task_record = get_task(task_id)
-    if not task_record:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    return {
-        "task_id": task_record.task_id,
-        "status": task_record.status,
-        "progress": task_record.progress,
-        "total": task_record.total,
-        "message": task_record.message,
-        "platform": task_record.platform,
-        "manga_info": task_record.manga_info,
-        "zip_path": task_record.zip_path,
-        "output_path": task_record.output_path,
-        "error": task_record.error
-    }
-
-
-@app.get("/api/progress/{task_id}")
-async def stream_progress(task_id: str, timeout: float = 300.0):
-    """SSE 进度推送 - 优化版，仅在重要状态变化时发送，带超时控制"""
-    # 检查任务是否存在（从数据库或内存中）
-    task_record = get_task(task_id)
-    if not task_record:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    # 只读取一次配置，避免每次循环都读取
-    sse_config = config.get_config().sse
-    heartbeat_interval = max(0.5, sse_config.heartbeat_interval)
-
-    import time
-
-    async def event_generator():
-        start_time = time.time()
-
-        # 发送初始化状态
-        last_state = task_last_sse_state.get(task_id, {})
-
-        # 用于计算进度百分比
-        last_progress_percent = 0
-
-        # 检查是否是重要变化（模块级函数，便于测试）
-        def is_important_change(current, last) -> bool:
-            """判断是否是重要变化（过滤掉 message 的微小变化）"""
-            nonlocal last_progress_percent
-
-            # 状态变化是重要事件
-            if current.get("status") != last.get("status"):
-                return True
-            # 错误变化是重要事件
-            if current.get("error") != last.get("error"):
-                return True
-            # total 变化（通常只在开始时）
-            if current.get("total") != last.get("total"):
-                return True
-
-            # 进度变化检查：只在百分比变化超过 5% 时发送
-            current_total = current.get("total", 0)
-            current_progress = current.get("progress", 0)
-            if current_total > 0:
-                current_percent = (current_progress / current_total) * 100
-                if current_percent - last_progress_percent >= 5:  # 5% 阈值
-                    last_progress_percent = current_percent
-                    return True
-
-            # message 只在包含关键词时发送（避免下载中 1/50 这种频繁变化）
-            msg_changed = current.get("message") != last.get("message")
-            if msg_changed:
-                important_keywords = ["检测到", "解码", "读取", "完成", "失败", "错误", "加载", "打包"]
-                msg = current.get("message", "")
-                return any(kw in msg for kw in important_keywords)
-            return False
-
-        # 立即发送当前状态
-        yield f"data: {get_task_data(task_record)}\n\n"
-
-        while True:
-            # 检查超时
-            elapsed = time.time() - start_time
-            if elapsed > timeout:
-                task_last_sse_state.pop(task_id, None)
-                break
-
-            # 获取最新任务状态（从数据库）
-            current_record = get_task(task_id)
-            if not current_record:
-                task_last_sse_state.pop(task_id, None)
-                break
-
-            current_state = {
-                "status": current_record.status,
-                "progress": current_record.progress,
-                "total": current_record.total,
-                "message": current_record.message,
-                "error": current_record.error,
-            }
-
-            # 只有重要状态变化时才发送
-            if is_important_change(current_state, last_state):
-                yield f"data: {get_task_data(current_record)}\n\n"
-                last_state = current_state.copy()
-                task_last_sse_state[task_id] = last_state
-
-            # 任务完成或失败，结束连接
-            if current_record.status in ("completed", "failed"):
-                task_last_sse_state.pop(task_id, None)
-                break
-
-            # 使用缓存的配置值，避免重复读取
-            await asyncio.sleep(heartbeat_interval)
-
-    def get_task_data(record: TaskRecord):
-        """获取任务数据的 JSON 字符串"""
-        data = {
-            "task_id": record.task_id,
-            "status": record.status,
-            "progress": record.progress,
-            "total": record.total,
-            "message": record.message,
-            "platform": record.platform,
-            "manga_info": record.manga_info,
-            "zip_path": record.zip_path,
-            "error": record.error
-        }
-        return json.dumps(data, ensure_ascii=False) + "\n\n"
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-        }
-    )
-
-
-@app.get("/api/files/{task_id}")
-async def download_file(task_id: str):
-    """下载打包文件"""
-    task_record = get_task(task_id)
-    if not task_record:
-        raise HTTPException(status_code=404, detail="任务不存在")
-
-    if task_record.status != "completed":
-        raise HTTPException(status_code=400, detail="任务尚未完成")
-
-    if not task_record.zip_path or not Path(task_record.zip_path).exists():
-        raise HTTPException(status_code=404, detail="文件不存在")
-
-    filename = Path(task_record.zip_path).name
-    return FileResponse(
-        task_record.zip_path,
-        media_type="application/zip",
-        filename=filename
-    )
 
 
 @app.get("/api/history")
