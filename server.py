@@ -46,21 +46,21 @@ from crawlers import (
     save_task,
     delete_task,
     delete_history_tasks,
-    get_all_tasks,
     get_history_tasks,
     get_total_count,
-    update_task_status,
-    update_task_progress,
 )
-from crawlers.base import MangaInfo as CrawlerMangaInfo, DownloadProgress
-from crawlers.auth import get_auth_manager, AuthManager
-from crawlers.resume import get_resume_manager, ResumeInfo
-from crawlers.search import search_all_platforms, get_searcher, SearchResult
+from crawlers.base import DownloadProgress
+from crawlers.auth import get_auth_manager
+from crawlers.resume import get_resume_manager
+from crawlers.search import search_all_platforms, get_searcher
 from crawlers.manga_search import get_manga_searcher
+from crawlers.registry import get_crawler_by_platform
+from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
 from routes.platforms import router as platforms_router
 from routes.queue import build_queue_router
+from routes.resume import build_resume_router
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
@@ -738,176 +738,17 @@ async def get_manga_chapters(url: str, platform: str):
 
 # ============== 认证 API ==============
 
-class LoginRequest(BaseModel):
-    platform: str
-    username: str
-    password: str
-    credentials: Optional[dict] = None  # 额外的凭据字段
-
-
-class LoginResponse(BaseModel):
-    status: str
-    platform: str
-    user_id: Optional[str] = None
-    user_name: Optional[str] = None
-    message: Optional[str] = None
-
-
-@app.post("/api/auth/login", response_model=LoginResponse)
-async def login(request: LoginRequest):
-    """登录平台"""
-    platform = request.platform
-    credentials = {
-        'username': request.username,
-        'password': request.password,
-    }
-    # 添加额外凭据
-    if request.credentials:
-        credentials.update(request.credentials)
-
-    # 检查平台是否支持
-    crawler = get_crawler_by_platform(platform)
-    if crawler is None:
-        raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
-
-    # 检查平台是否实现了登录
-    if not hasattr(crawler, 'login') or not callable(getattr(crawler, 'login')):
-        raise HTTPException(status_code=400, detail=f"平台 {platform} 不支持登录")
-
-    auth_manager = get_auth_manager()
-    result = await auth_manager.login(platform, credentials)
-
-    if result:
-        user_info = await auth_manager.get_user_info(platform)
-        return LoginResponse(
-            status="success",
-            platform=platform,
-            user_id=user_info.get('user_id') if user_info else None,
-            user_name=user_info.get('user_name') if user_info else None,
-            message="登录成功"
-        )
-    else:
-        raise HTTPException(status_code=401, detail="登录失败")
-
-
-@app.post("/api/auth/logout")
-async def logout(request: dict):
-    """登出平台"""
-    platform = request.get("platform")
-
-    if not platform:
-        raise HTTPException(status_code=400, detail="缺少 platform 参数")
-
-    auth_manager = get_auth_manager()
-    result = await auth_manager.logout(platform)
-
-    if result:
-        return {"status": "success", "platform": platform, "message": "登出成功"}
-    else:
-        raise HTTPException(status_code=500, detail="登出失败")
-
-
-@app.get("/api/auth/status")
-async def auth_status(platform: str):
-    """检查登录状态"""
-    auth_manager = get_auth_manager()
-    is_logged_in = await auth_manager.is_logged_in(platform)
-
-    if is_logged_in:
-        user_info = await auth_manager.get_user_info(platform)
-        return {
-            "status": "logged_in",
-            "platform": platform,
-            "user_id": user_info.get('user_id') if user_info else None,
-            "user_name": user_info.get('user_name') if user_info else None,
-        }
-    else:
-        return {
-            "status": "logged_out",
-            "platform": platform,
-            "user_id": None,
-            "user_name": None,
-        }
-
-
-# ============== 断点续传 API ==============
-
-class ResumeStatus(BaseModel):
-    """断点续传状态"""
-    task_id: str
-    url: str
-    platform: str
-    total: int
-    downloaded_count: int
-    success_count: int
-    failed_count: int
-    created_at: str
-    last_updated: str
-
-
-@app.get("/api/resume/status/{task_id}")
-async def get_resume_status(task_id: str):
-    """获取断点续传状态"""
-    resume_manager = get_resume_manager()
-    info = await resume_manager.load_progress(task_id)
-
-    if info is None:
-        raise HTTPException(status_code=404, detail="未找到断点续传记录")
-
-    return ResumeStatus(
-        task_id=info.task_id,
-        url=info.url,
-        platform=info.platform,
-        total=info.total,
-        downloaded_count=info.downloaded_count,
-        success_count=info.success_count,
-        failed_count=info.failed_count,
-        created_at=info.created_at,
-        last_updated=info.last_updated,
+app.include_router(
+    build_auth_router(
+        get_auth_manager=lambda: get_auth_manager(),
+        get_crawler_by_platform=lambda platform: get_crawler_by_platform(platform),
     )
-
-
-@app.delete("/api/resume/{task_id}")
-async def delete_resume(task_id: str):
-    """删除断点续传记录"""
-    resume_manager = get_resume_manager()
-    result = await resume_manager.remove_progress(task_id)
-
-    if result:
-        return {"status": "deleted", "task_id": task_id}
-    else:
-        raise HTTPException(status_code=404, detail="未找到断点续传记录")
-
-
-@app.get("/api/resume/list")
-async def list_resumes():
-    """列出所有断点续传记录"""
-    resume_manager = get_resume_manager()
-    infos = await resume_manager.get_all_resumes()
-
-    resumes = []
-    for info in infos:
-        resumes.append(ResumeStatus(
-            task_id=info.task_id,
-            url=info.url,
-            platform=info.platform,
-            total=info.total,
-            downloaded_count=info.downloaded_count,
-            success_count=info.success_count,
-            failed_count=info.failed_count,
-            created_at=info.created_at,
-            last_updated=info.last_updated,
-        ))
-
-    return {"resumes": resumes, "total": len(resumes)}
-
-
-@app.post("/api/resume/cleanup")
-async def cleanup_resumes(days: int = 7):
-    """清理旧的断点续传记录"""
-    resume_manager = get_resume_manager()
-    count = await resume_manager.cleanup_old_resumes(days)
-    return {"cleaned": count, "days": days}
+)
+app.include_router(
+    build_resume_router(
+        get_resume_manager=lambda: get_resume_manager(),
+    )
+)
 
 
 # ============== 启动 ==============
