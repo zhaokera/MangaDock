@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   getMangaChapters,
-  getPlatforms,
   searchManga,
   startBatchDownload,
   startDownload,
@@ -21,6 +20,7 @@ import UrlInput from '../components/UrlInput';
 
 interface MangaPageProps {
   platforms: Platform[];
+  allPlatforms?: Platform[];
 }
 
 const PLATFORM_COLORS: Record<string, { primary: string; secondary: string }> = {
@@ -36,10 +36,9 @@ const getPlatformColor = (platform?: string) => {
   return PLATFORM_COLORS[platform] || PLATFORM_COLORS.default;
 };
 
-const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
+const MangaPage: React.FC<MangaPageProps> = ({ platforms, allPlatforms = platforms }) => {
   const [downloading, setDownloading] = useState(false);
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
-  const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
   const [searchAttempted, setSearchAttempted] = useState(false);
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
@@ -54,10 +53,6 @@ const MangaPage: React.FC<MangaPageProps> = ({ platforms }) => {
   const chapterRequestIdRef = useRef(0);
 
   useEffect(() => {
-    getPlatforms()
-      .then((data) => setAllPlatforms(data.platforms || []))
-      .catch(console.error);
-
     return () => {
       unsubscribeRef.current?.();
     };

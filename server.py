@@ -88,6 +88,7 @@ class PlatformInfo(BaseModel):
     name: str
     display_name: str
     patterns: list[str]
+    type: str
 
 
 class SearchRequest(BaseModel):
@@ -607,14 +608,7 @@ async def root():
 @app.get("/api/platforms")
 async def list_platforms():
     """获取支持的平台列表"""
-    platforms = get_supported_platforms()
-
-    # 标记视频平台支持搜索
-    video_platforms = {'tencent', 'iqiyi', 'youku', 'mango', 'dl_expo'}
-    for p in platforms:
-        p['type'] = 'video' if p['name'] in video_platforms else 'manga'
-
-    return {"platforms": platforms}
+    return {"platforms": get_supported_platforms()}
 
 
 @app.post("/api/parse")

@@ -84,7 +84,7 @@ vi.mock('../components/DownloadProgress', () => ({
 }));
 
 const videoPlatforms = [
-  { name: 'iqiyi', display_name: '爱奇艺', patterns: ['iqiyi\\.com'] },
+  { name: 'iqiyi', display_name: '爱奇艺', patterns: ['iqiyi\\.com'], type: 'video' as const },
 ];
 
 beforeEach(() => {

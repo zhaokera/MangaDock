@@ -25,6 +25,7 @@ _VIDEO_URL_PATTERN = re.compile(r'https?://[^\s"\'<>]+?(?:\.mp4|\.m3u8)(?:\?[^\s
 @register_crawler
 class DlExpoCrawler(BaseCrawler):
     PLATFORM_NAME = "dl_expo"
+    PLATFORM_TYPE = "video"
     PLATFORM_DISPLAY_NAME = "糯米影视"
     URL_PATTERNS = [
         r"dl-expo\.com/play/\d+/\d+-\d+\.html",

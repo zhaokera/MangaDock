@@ -100,7 +100,7 @@ it('shows a pending dl-expo task immediately after selecting a search result', a
 
   render(
     <DlExpoPage
-      platforms={[{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'] }]}
+      platforms={[{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' as const }]}
     />,
   );
 
@@ -119,10 +119,10 @@ it('shows a pending dl-expo task immediately after selecting a search result', a
 it('renders dl-expo-specific help and restricts child components to the standalone platform', () => {
   render(
     <DlExpoPage
-      platforms={[{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'] }]}
+      platforms={[{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' as const }]}
       allPlatforms={[
-        { name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'] },
-        { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'] },
+        { name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' as const },
+        { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' as const },
       ]}
     />,
   );

@@ -99,6 +99,7 @@ def get_supported_platforms() -> List[Dict]:
             "name": crawler_class.PLATFORM_NAME,
             "display_name": crawler_class.PLATFORM_DISPLAY_NAME,
             "patterns": crawler_class.URL_PATTERNS,
+            "type": crawler_class.PLATFORM_TYPE,
         })
     return platforms
 

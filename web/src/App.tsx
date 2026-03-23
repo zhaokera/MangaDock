@@ -1,7 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { getPlatforms, type Platform } from './api/client';
-import { getPlatformsForContentType } from './lib/contentType';
 import AppShell from './components/AppShell';
 import DlExpoPage from './pages/DlExpoPage';
 import MangaPage from './pages/MangaPage';
@@ -17,11 +16,11 @@ const App: React.FC = () => {
   }, []);
 
   const mangaPlatforms = useMemo(
-    () => getPlatformsForContentType(allPlatforms, 'manga'),
+    () => allPlatforms.filter((platform) => platform.type === 'manga'),
     [allPlatforms],
   );
   const videoPlatforms = useMemo(
-    () => getPlatformsForContentType(allPlatforms, 'video').filter((platform) => platform.name !== 'dl_expo'),
+    () => allPlatforms.filter((platform) => platform.type === 'video' && platform.name !== 'dl_expo'),
     [allPlatforms],
   );
   const dlExpoPlatforms = useMemo(
@@ -35,11 +34,11 @@ const App: React.FC = () => {
         <Route index element={<Navigate to="/manga" replace />} />
         <Route
           path="manga"
-          element={<MangaPage platforms={mangaPlatforms} />}
+          element={<MangaPage platforms={mangaPlatforms} allPlatforms={allPlatforms} />}
         />
         <Route
           path="video"
-          element={<VideoPage platforms={videoPlatforms} />}
+          element={<VideoPage platforms={videoPlatforms} allPlatforms={allPlatforms} />}
         />
         <Route
           path="dl-expo"

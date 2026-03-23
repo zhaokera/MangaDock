@@ -97,6 +97,8 @@ class BaseCrawler(ABC):
 
     # 平台标识 (子类必须覆盖)
     PLATFORM_NAME: str = ""
+    # 内容类型
+    PLATFORM_TYPE: str = "manga"
     # 平台显示名称
     PLATFORM_DISPLAY_NAME: str = ""
     # URL 匹配模式 (子类必须覆盖)

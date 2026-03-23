@@ -1,12 +1,16 @@
-import { render, screen, within } from '@testing-library/react';
+import { cleanup, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from './App';
 import DownloadProgress from './components/DownloadProgress';
 import { renderWithRouter } from './test/renderWithRouter';
 
+const { getPlatformsMock } = vi.hoisted(() => ({
+  getPlatformsMock: vi.fn(),
+}));
+
 vi.mock('./api/client', () => ({
-  getPlatforms: vi.fn().mockResolvedValue({ platforms: [] }),
+  getPlatforms: getPlatformsMock,
   getHistory: vi.fn().mockResolvedValue({ history: [] }),
   getDownloadUrl: vi.fn((taskId: string) => `/api/files/${taskId}`),
   startDownload: vi.fn().mockResolvedValue({ task_id: 'task-1', platform: 'tencent' }),
@@ -26,6 +30,21 @@ vi.mock('./api/client', () => ({
     return vi.fn();
   }),
 }));
+
+beforeEach(() => {
+  getPlatformsMock.mockReset();
+  getPlatformsMock.mockResolvedValue({
+    platforms: [
+      { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'], type: 'manga' },
+      { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' },
+      { name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' },
+    ],
+  });
+});
+
+afterEach(() => {
+  cleanup();
+});
 
 vi.mock('./components/SearchInput', () => ({
   default: ({
@@ -75,6 +94,29 @@ it('navigates from manga to video and swaps page-specific hero text', async () =
     .find((link) => link.getAttribute('aria-current') === 'page');
 
   expect(activeVideoLink).toBeDefined();
+});
+
+it('routes platforms by backend-declared type instead of hardcoded platform names', async () => {
+  getPlatformsMock.mockReset();
+  getPlatformsMock.mockResolvedValue({
+    platforms: [
+      { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'], type: 'manga' },
+      { name: 'custom_video', display_name: '自定义视频站', patterns: ['custom-video\\.com'], type: 'video' },
+    ],
+  });
+
+  renderWithRouter(<App />, ['/video']);
+
+  expect(await screen.findByText('自定义视频站')).toBeInTheDocument();
+  expect(screen.queryByText('漫画柜')).not.toBeInTheDocument();
+});
+
+it('loads the platform catalog only once when rendering the app shell and pages', async () => {
+  renderWithRouter(<App />, ['/manga']);
+
+  await waitFor(() => {
+    expect(getPlatformsMock).toHaveBeenCalledTimes(1);
+  });
 });
 
 it('navigates to the dl-expo standalone page', async () => {

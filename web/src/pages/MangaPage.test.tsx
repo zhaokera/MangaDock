@@ -138,12 +138,12 @@ it('shows a search error message instead of the empty-results copy when the requ
 });
 
 const mangaPlatforms = [
-  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'] },
+  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'], type: 'manga' as const },
 ];
 
 const allPlatforms = [
   ...mangaPlatforms,
-  { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'] },
+  { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' as const },
 ];
 
 let progressHandler: ((status: TaskStatus) => void) | null = null;

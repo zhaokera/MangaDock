@@ -34,6 +34,7 @@ class YoukuCrawler(BaseCrawler):
     """优酷爬虫"""
 
     PLATFORM_NAME = "youku"
+    PLATFORM_TYPE = "video"
     PLATFORM_DISPLAY_NAME = "优酷"
     URL_PATTERNS = [
         r"v\.youku\.com/v_show/id_[a-zA-Z0-9=]+\.html",

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { getPlatforms, type Platform, type SearchResult, type TaskStatus, startDownload, subscribeProgress } from '../api/client';
+import { type Platform, type SearchResult, type TaskStatus, startDownload, subscribeProgress } from '../api/client';
 import DownloadProgress from '../components/DownloadProgress';
 import History from '../components/History';
 import SearchInput from '../components/SearchInput';
@@ -7,6 +7,7 @@ import UrlInput from '../components/UrlInput';
 
 interface VideoPageProps {
   platforms: Platform[];
+  allPlatforms?: Platform[];
 }
 
 const PLATFORM_COLORS: Record<string, { primary: string; secondary: string }> = {
@@ -25,17 +26,13 @@ const getPlatformColor = (platform?: string) => {
   return PLATFORM_COLORS[platform] || PLATFORM_COLORS.default;
 };
 
-const VideoPage: React.FC<VideoPageProps> = ({ platforms }) => {
+const VideoPage: React.FC<VideoPageProps> = ({ platforms, allPlatforms = platforms }) => {
   const [currentTask, setCurrentTask] = useState<TaskStatus | null>(null);
-  const [allPlatforms, setAllPlatforms] = useState<Platform[]>(platforms);
   const [lastRequestedUrl, setLastRequestedUrl] = useState<string | null>(null);
   const unsubscribeRef = useRef<(() => void) | null>(null);
   const downloading = currentTask?.status === 'pending' || currentTask?.status === 'downloading';
 
   useEffect(() => {
-    getPlatforms()
-      .then((data) => setAllPlatforms(data.platforms || []))
-      .catch(console.error);
     return () => {
       unsubscribeRef.current?.();
     };

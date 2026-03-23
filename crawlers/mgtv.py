@@ -34,6 +34,7 @@ class MgtvCrawler(BaseCrawler):
     """芒果TV爬虫"""
 
     PLATFORM_NAME = "mango"
+    PLATFORM_TYPE = "video"
     PLATFORM_DISPLAY_NAME = "芒果TV"
     URL_PATTERNS = [
         r"mgtv\.com/b/[a-zA-Z0-9]+/[a-zA-Z0-9]+\.html",

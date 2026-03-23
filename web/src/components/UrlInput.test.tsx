@@ -5,12 +5,12 @@ import { expect, it, vi } from 'vitest';
 import UrlInput from './UrlInput';
 
 const platforms = [
-  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'] },
+  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'], type: 'manga' as const },
 ];
 
 const allPlatforms = [
-  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'] },
-  { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'] },
+  { name: 'manhuagui', display_name: '漫画柜', patterns: ['manhuagui\\.com'], type: 'manga' as const },
+  { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' as const },
 ];
 
 afterEach(() => {
@@ -67,7 +67,7 @@ it('tells the user to switch to manga when a manga link is pasted on the video p
       contentType="video"
       disabled={false}
       onDownload={onDownload}
-      platforms={[{ name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'] }]}
+      platforms={[{ name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' as const }]}
       allPlatforms={allPlatforms}
     />,
   );
@@ -115,10 +115,10 @@ it('shows dedicated wrong-page guidance for other video platforms on the dl-expo
         contentType: 'video',
         disabled: false,
         onDownload,
-        platforms: [{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'] }],
+        platforms: [{ name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' as const }],
         allPlatforms: [
-          { name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'] },
-          { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'] },
+          { name: 'dl_expo', display_name: '糯米影视', patterns: ['dl-expo\\.com'], type: 'video' as const },
+          { name: 'tencent', display_name: '腾讯视频', patterns: ['v\\.qq\\.com'], type: 'video' as const },
         ],
         allowedPlatforms: ['dl_expo'],
         wrongPageMessage: '该链接属于其他站点，请切换到对应页面下载',

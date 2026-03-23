@@ -39,6 +39,7 @@ class TencentCrawler(BaseCrawler):
     """腾讯视频爬虫"""
 
     PLATFORM_NAME = "tencent"
+    PLATFORM_TYPE = "video"
     PLATFORM_DISPLAY_NAME = "腾讯视频"
     URL_PATTERNS = [
         r"v\.qq\.com/x/cover/[a-zA-Z0-9]+/[a-zA-Z0-9]+(?:\.html)?",

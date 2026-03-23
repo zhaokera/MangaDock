@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { Platform } from '../api/client';
-import { getContentTypeForPlatform, type ContentType } from '../lib/contentType';
+import type { ContentType } from '../lib/contentType';
 
 interface UrlInputProps {
   contentType: ContentType;
@@ -78,7 +78,7 @@ const UrlInput: React.FC<UrlInputProps> = ({
   };
 
   const getOppositePlatforms = () =>
-    allPlatforms.filter((candidate) => getContentTypeForPlatform(candidate.name) !== contentType);
+    allPlatforms.filter((candidate) => candidate.type !== contentType);
 
   const getSameTypeDisallowedPlatforms = () => {
     if (!allowedPlatforms || allowedPlatforms.length === 0) {
@@ -87,7 +87,7 @@ const UrlInput: React.FC<UrlInputProps> = ({
 
     return allPlatforms.filter(
       (candidate) =>
-        getContentTypeForPlatform(candidate.name) === contentType
+        candidate.type === contentType
         && !allowedPlatforms.includes(candidate.name),
     );
   };

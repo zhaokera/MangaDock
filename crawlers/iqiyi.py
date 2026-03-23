@@ -43,6 +43,7 @@ class IqiyiCrawler(BaseCrawler):
     """爱奇艺爬虫"""
 
     PLATFORM_NAME = "iqiyi"
+    PLATFORM_TYPE = "video"
     PLATFORM_DISPLAY_NAME = "爱奇艺"
     URL_PATTERNS = [
         r"iqiyi\.com/v_[a-zA-Z0-9]+\.html",

@@ -1,4 +1,4 @@
-import { getContentTypeForPlatform, getPlatformsForContentType, type ContentType } from '../lib/contentType';
+import type { ContentType } from '../lib/contentType';
 
 const API_BASE = '/api';
 
@@ -6,6 +6,7 @@ export interface Platform {
   name: string;
   display_name: string;
   patterns: string[];
+  type: ContentType;
 }
 
 export interface MangaInfo {
@@ -314,9 +315,9 @@ export async function getSearchPlatforms(): Promise<{ platforms: SearchPlatform[
   // 从 API 获取平台列表，标记支持搜索的平台
   const response = await fetch(`${API_BASE}/platforms`);
   const data: { platforms?: Platform[] } = await response.json();
-  const platforms = getPlatformsForContentType(data.platforms || [], 'video').map((p): SearchPlatform => ({
+  const platforms = (data.platforms || []).filter((platform) => platform.type === 'video').map((p): SearchPlatform => ({
     ...p,
-    type: getContentTypeForPlatform(p.name)
+    type: p.type,
   }));
 
   return { platforms };
