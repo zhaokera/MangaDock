@@ -16,7 +16,7 @@ from typing import Optional, List
 from dataclasses import dataclass, field, asdict
 
 try:
-    from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
+    from fastapi import FastAPI, HTTPException
     from fastapi.middleware.cors import CORSMiddleware
     from pydantic import BaseModel
 except ImportError:
@@ -61,6 +61,7 @@ from routes.history import build_history_router
 from routes.platforms import router as platforms_router
 from routes.queue import build_queue_router
 from routes.resume import build_resume_router
+from routes.search import build_search_router
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
@@ -78,18 +79,6 @@ class DownloadRequest(BaseModel):
 
 class BatchDownloadRequest(BaseModel):
     urls: List[str]
-
-
-class SearchRequest(BaseModel):
-    keyword: str
-    platform: Optional[str] = None  # 可选，指定平台
-    limit: int = 10
-
-
-class SearchResponse(BaseModel):
-    results: List[dict]
-    total: int
-    platform: Optional[str] = None
 
 
 class MangaInfoResponse(BaseModel):
@@ -610,6 +599,13 @@ app.include_router(
         queue_lock=_download_queue_lock,
     )
 )
+app.include_router(
+    build_search_router(
+        search_all_platforms=lambda keyword, limit: search_all_platforms(keyword, limit_per_platform=limit),
+        get_searcher=lambda platform: get_searcher(platform),
+        get_manga_searcher=lambda platform: get_manga_searcher(platform),
+    )
+)
 
 
 # ============== API 端点 ==============
@@ -643,97 +639,6 @@ async def parse_url(request: DownloadRequest):
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"解析失败: {e}")
-
-
-async def _run_search(keyword: str, platform: Optional[str], limit: int) -> dict:
-    """执行搜索并统一返回格式。"""
-    if not keyword:
-        raise HTTPException(status_code=400, detail="缺少 keyword 参数")
-
-    limit = min(max(limit, 1), 50)
-
-    try:
-        if platform:
-            searcher = get_searcher(platform)
-            if searcher is None:
-                raise HTTPException(status_code=400, detail=f"不支持的平台: {platform}")
-            results = await searcher.search(keyword, limit=limit)
-        else:
-            results = await search_all_platforms(keyword, limit_per_platform=limit)
-
-        return {
-            "results": [r.to_dict() for r in results],
-            "total": len(results),
-            "platform": platform,
-        }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"搜索失败: {e}")
-
-
-def _get_manga_searcher_or_400(platform: str):
-    searcher = get_manga_searcher(platform)
-    if searcher is None:
-        raise HTTPException(status_code=400, detail=f"不支持的漫画搜索平台: {platform}")
-    return searcher
-
-
-def _raise_manga_not_implemented(platform: str, action: str) -> None:
-    raise HTTPException(
-        status_code=501,
-        detail=f"漫画搜索平台 {platform} 尚未实现{action}",
-    )
-
-
-@app.post("/api/search")
-async def search_videos(request: SearchRequest, background_tasks: BackgroundTasks):
-    """搜索视频 - 支持按名称搜索各大视频平台"""
-    return await _run_search(
-        keyword=request.keyword,
-        platform=request.platform,
-        limit=request.limit,
-    )
-
-
-@app.get("/api/search")
-async def search_videos_get(
-    keyword: str = Query(...),
-    platform: Optional[str] = Query(None),
-    limit: int = Query(10),
-):
-    """兼容前端 GET 请求的搜索接口。"""
-    return await _run_search(keyword=keyword, platform=platform, limit=limit)
-
-
-@app.get("/api/search/manga")
-async def search_manga(keyword: str, platform: str, limit: int = 10):
-    searcher = _get_manga_searcher_or_400(platform)
-
-    try:
-        results = await searcher.search(keyword, limit=limit)
-    except NotImplementedError:
-        _raise_manga_not_implemented(platform, "漫画搜索")
-
-    return {
-        "results": [item.to_dict() for item in results],
-        "total": len(results),
-        "platform": platform,
-    }
-
-
-@app.get("/api/manga/chapters")
-async def get_manga_chapters(url: str, platform: str):
-    searcher = _get_manga_searcher_or_400(platform)
-
-    try:
-        payload = await searcher.get_chapters(url)
-    except NotImplementedError:
-        _raise_manga_not_implemented(platform, "章节目录")
-
-    return payload.to_dict()
 
 
 # ============== 认证 API ==============
