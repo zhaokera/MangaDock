@@ -1,6 +1,6 @@
 export type ContentType = 'manga' | 'video';
 
-const VIDEO_PLATFORMS = new Set(['tencent', 'iqiyi', 'youku', 'mango', 'bilibili', 'dl_expo']);
+const VIDEO_PLATFORMS = new Set(['tencent', 'iqiyi', 'youku', 'mango', 'dl_expo']);
 
 export function getContentTypeForPlatform(platform?: string): ContentType {
   return VIDEO_PLATFORMS.has(platform ?? '') ? 'video' : 'manga';

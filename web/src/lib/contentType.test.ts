@@ -4,6 +4,7 @@ import { filterByContentType, getContentTypeForPlatform } from './contentType';
 describe('content type mapping', () => {
   it('classifies known manga and video platforms', () => {
     expect(getContentTypeForPlatform('manhuagui')).toBe('manga');
+    expect(getContentTypeForPlatform('bilibili')).toBe('manga');
     expect(getContentTypeForPlatform('tencent')).toBe('video');
     expect(getContentTypeForPlatform('unknown-platform')).toBe('manga');
   });

@@ -610,7 +610,7 @@ async def list_platforms():
     platforms = get_supported_platforms()
 
     # 标记视频平台支持搜索
-    video_platforms = {'tencent', 'iqiyi', 'youku', 'mango', 'bilibili', 'dl_expo'}
+    video_platforms = {'tencent', 'iqiyi', 'youku', 'mango', 'dl_expo'}
     for p in platforms:
         p['type'] = 'video' if p['name'] in video_platforms else 'manga'
 
