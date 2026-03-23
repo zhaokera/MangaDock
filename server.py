@@ -8,12 +8,10 @@ FastAPI 后端 + SSE 进度推送
 import asyncio
 import os
 import re
-import zipfile
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, List
-from dataclasses import dataclass, field, asdict
+from typing import Optional
 
 try:
     from fastapi import FastAPI, HTTPException
@@ -39,9 +37,7 @@ logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
 # 导入爬虫模块
 from crawlers import (
     get_crawler,
-    BaseCrawler,
     init_db,
-    TaskRecord,
     get_task,
     save_task,
     delete_task,
@@ -49,7 +45,6 @@ from crawlers import (
     get_history_tasks,
     get_total_count,
 )
-from crawlers.base import DownloadProgress
 from crawlers.auth import get_auth_manager
 from crawlers.resume import get_resume_manager
 from crawlers.search import search_all_platforms, get_searcher
@@ -62,6 +57,14 @@ from routes.platforms import router as platforms_router
 from routes.queue import build_queue_router
 from routes.resume import build_resume_router
 from routes.search import build_search_router
+from services.browser_pool import (
+    cleanup_browser_pool,
+    close_all_browsers,
+    init_browser_for_crawler,
+    release_browser_for_platform,
+    schedule_browser_cleanup,
+)
+from services.downloader import MangaDownloader, add_history_item
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
@@ -75,19 +78,6 @@ CONFIG = config.get_config()
 
 class DownloadRequest(BaseModel):
     url: str
-
-
-class BatchDownloadRequest(BaseModel):
-    urls: List[str]
-
-
-class MangaInfoResponse(BaseModel):
-    platform: str
-    comic_id: str = ""
-    episode_id: str = ""
-    title: str = ""
-    chapter: str = ""
-    page_count: int = 0
 
 
 class DownloadTask:
@@ -146,434 +136,45 @@ DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 
-async def get_browser_for_platform(platform: str) -> dict:
-    """
-    获取指定平台的浏览器实例（从池中获取或创建新实例）
-
-    浏览器池管理策略：
-    - 每个平台最多保留 N 个浏览器实例（可配置）
-    - 空闲超时（默认 5 分钟）后自动关闭
-    - 使用计数器追踪活跃连接
-
-    Args:
-        platform: 平台名称
-
-    Returns:
-        dict: 包含 browser, context, page 的字典
-    """
-    import config
-    from playwright.async_api import async_playwright
-
-    async with _browser_pool_lock:
-        if platform in _browser_pool:
-            # 更新最后使用时间
-            _browser_pool[platform]["last_used"] = asyncio.get_running_loop().time()
-            return _browser_pool[platform]
-
-        # 创建新的浏览器实例
-        cfg = config.get_config()
-        playwright = await async_playwright().start()
-        browser = await playwright.chromium.launch(
-            headless=True,
-            channel="chrome",
-            args=cfg.crawler.browser_args
-        )
-        context = await browser.new_context(
-            viewport={"width": 1920, "height": 1080},
-            user_agent=cfg.crawler.user_agent or "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
-        )
-        page = await context.new_page()
-
-        current_time = asyncio.get_running_loop().time()
-        browser_info = {
-            "playwright": playwright,
-            "browser": browser,
-            "context": context,
-            "page": page,
-            "platform": platform,
-            "used_count": 0,
-            "created_at": current_time,
-            "last_used": current_time
-        }
-
-        _browser_pool[platform] = browser_info
-        logger.info(f"为平台 {platform} 创建新浏览器实例")
-        return browser_info
-
-
-async def release_browser_for_platform(platform: str):
-    """
-    释放指定平台的浏览器实例
-
-    优化策略：
-    - 不立即关闭浏览器，而是标记为可清理
-    - 通过 cleanup_browser_pool 定期清理空闲浏览器
-    - 避免频繁创建/销毁浏览器实例
-
-    Args:
-        platform: 平台名称
-    """
-    async with _browser_pool_lock:
-        if platform in _browser_pool:
-            browser_info = _browser_pool[platform]
-            browser_info["used_count"] = max(0, browser_info["used_count"] - 1)
-            browser_info["last_used"] = asyncio.get_running_loop().time()
-
-            # 记录使用状态
-            logger.debug(f"平台 {platform} 浏览器使用次数: {browser_info['used_count']}")
-
-
-async def init_browser_for_crawler(crawler: BaseCrawler, platform: str):
-    """
-    初始化爬虫的浏览器实例（从池中获取）
-
-    Args:
-        crawler: 爬虫实例
-        platform: 平台名称
-    """
-    browser_info = await get_browser_for_platform(platform)
-    crawler.browser = browser_info["browser"]
-    crawler.context = browser_info["context"]
-    crawler.page = browser_info["page"]
-    crawler.playwright = browser_info["playwright"]
-    crawler.cfg = config.get_config()  # 设置配置
-    browser_info["used_count"] += 1
-
-
-async def cleanup_browser_pool():
-    """
-    清理浏览器池中长时间未使用的浏览器
-
-    策略：
-    - 遍历所有平台的浏览器
-    - 如果 used_count <= 0 且最后使用时间超过空闲超时，则关闭
-    - 默认空闲超时：5 分钟
-
-    Returns:
-        list: 已关闭的平台列表
-    """
-    import config
-    async with _browser_pool_lock:
-        closed_platforms = []
-        cfg = config.get_config()
-        # 空闲超时（秒），从配置读取，默认 300 秒（5 分钟）
-        idle_timeout = getattr(cfg.crawler, 'browser_idle_timeout', 300)
-
-        current_time = asyncio.get_running_loop().time()
-
-        for platform, browser_info in list(_browser_pool.items()):
-            if browser_info["used_count"] <= 0:
-                last_used = browser_info.get("last_used", browser_info["created_at"])
-                idle_time = current_time - last_used
-
-                if idle_time > idle_timeout:
-                    try:
-                        logger.info(f"清理空闲浏览器 [平台: {platform}, 空闲时间: {idle_time:.1f}s]")
-
-                        if browser_info["page"]:
-                            await browser_info["page"].close()
-                        if browser_info["context"]:
-                            await browser_info["context"].close()
-                        if browser_info["browser"]:
-                            await browser_info["browser"].close()
-                        if browser_info["playwright"]:
-                            await browser_info["playwright"].stop()
-
-                        del _browser_pool[platform]
-                        closed_platforms.append(platform)
-                    except Exception as e:
-                        logger.error(f"清理平台 {platform} 浏览器失败: {e}")
-
-        return closed_platforms
-
-
-async def schedule_browser_cleanup(interval: float = 60.0):
-    """
-    定期调度浏览器池清理任务（后台运行）
-
-    Args:
-        interval: 清理检查间隔（秒），默认 60 秒
-    """
-    import time
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            closed = await cleanup_browser_pool()
-            if closed:
-                logger.info(f"浏览器池清理完成: {len(closed)} 个平台")
-        except Exception as e:
-            logger.error(f"浏览器池清理调度失败: {e}")
-
-
-def load_history() -> list[dict]:
-    """从文件加载历史记录"""
-    try:
-        if HISTORY_FILE.exists():
-            return json.loads(HISTORY_FILE.read_text(encoding='utf-8'))
-    except Exception as e:
-        logger.error(f"加载历史记录失败: {e}")
-    return []
-
-
-def save_history(history: list[dict]) -> None:
-    """保存历史记录到文件（同步版本，用于线程池执行）"""
-    try:
-        HISTORY_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HISTORY_FILE.write_text(json.dumps(history, ensure_ascii=False, indent=2), encoding='utf-8')
-    except Exception as e:
-        logger.error(f"保存历史记录失败: {e}")
-
-
-async def save_history_async(history: list[dict]) -> None:
-    """保存历史记录到文件（异步版本，使用线程池）"""
-    loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, save_history, history)
-
-
-async def add_history_item(history_item: dict) -> bool:
-    """
-    添加历史记录项（线程安全）
-
-    Returns:
-        bool: 是否成功添加（False 表示已存在）
-    """
-    async with _state_lock:
-        # 检查是否已存在
-        existing = get_task(history_item["task_id"])
-        if existing:
-            return False
-
-        # 保存到数据库
-        record = TaskRecord(
-            task_id=history_item["task_id"],
-            url=history_item.get("url", ""),
-            platform=history_item["platform"],
-            status="completed",
-            message=history_item.get("message", ""),
-            manga_info=history_item.get("manga_info"),
-            zip_path=history_item.get("zip_path"),
-            created_at=history_item.get("created_at", datetime.now().isoformat()),
-            updated_at=datetime.now().isoformat(),
-        )
-        save_task(record)
-
-        # 限制历史记录数量 - 删除最早的记录
-        history_config = config.get_config().history
-        max_items = history_config.max_items if history_config.max_items > 0 else 100
-        total = get_total_count(status="completed")
-        if total > max_items:
-            # 获取需要删除的 task_ids
-            old_tasks = get_history_tasks(limit=total - max_items)
-            for t in old_tasks:
-                delete_task(t.task_id)
-        return True
-
-
-# ============== 下载器 ==============
-
-class MangaDownloader:
-    """漫画下载器 - 使用爬虫注册表"""
-
-    def __init__(self, task: DownloadTask):
-        self.task = task
-        self.crawler: Optional[BaseCrawler] = None
-        self.task_record: Optional[TaskRecord] = None
-
-    def _cleanup_task(self):
-        """清理任务相关的资源"""
-        task_last_sse_state.pop(self.task.task_id, None)
-        tasks.pop(self.task.task_id, None)  # 自动清理 tasks 字典
-
-    async def run(self):
-        """执行下载"""
-        try:
-            # 根据 URL 获取爬虫
-            self.crawler = get_crawler(self.task.url)
-            self.task.platform = self.crawler.PLATFORM_NAME
-
-            # 初始化爬虫的浏览器实例（从池中获取）
-            await init_browser_for_crawler(self.crawler, self.task.platform)
-
-            # 创建任务记录并保存到数据库
-            self.task_record = TaskRecord(
-                task_id=self.task.task_id,
-                url=self.task.url,
-                platform=self.task.platform,
-                status="pending",
-                created_at=self.task.created_at.isoformat(),
-                updated_at=datetime.now().isoformat(),
-            )
-            save_task(self.task_record)
-
-            await self._do_download()
-        except ValueError as e:
-            self.task.status = "failed"
-            self.task.error = str(e)
-            self.task.message = f"错误: {e}"
-            if self.task_record:
-                self.task_record.status = "failed"
-                self.task_record.error = str(e)
-                self.task_record.message = f"错误: {e}"
-                save_task(self.task_record)
-        except Exception as e:
-            self.task.status = "failed"
-            self.task.error = str(e)
-            self.task.message = f"下载失败: {e}"
-            import traceback
-            traceback.print_exc()
-            if self.task_record:
-                self.task_record.status = "failed"
-                self.task_record.error = str(e)
-                self.task_record.message = f"下载失败: {e}"
-                save_task(self.task_record)
-        finally:
-            # 任务完成或失败后清理浏览器引用
-            if self.crawler:
-                # 释放浏览器引用，不立即关闭（浏览器池会管理）
-                self.crawler.browser = None
-                self.crawler.context = None
-                self.crawler.page = None
-                self.crawler.playwright = None
-            # 任务完成或失败后清理 tasks 字典和 SSE 状态
-            self._cleanup_task()
-            # 保存任务到数据库
-            save_task(self.task_record)
-
-    async def __aenter__(self):
-        """Async context manager entry"""
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit - 自动清理资源"""
-        # 任务完成或失败后清理浏览器引用
-        if self.crawler:
-            self.crawler.browser = None
-            self.crawler.context = None
-            self.crawler.page = None
-            self.crawler.playwright = None
-        # 清理 SSE 状态
-        self._cleanup_task()
-        # 清理任务状态
-        tasks.pop(self.task.task_id, None)
-
-
-    def _update_manga_info(self):
-        """更新漫画信息（合并重复逻辑）"""
-        if self.crawler and hasattr(self.crawler, 'manga_info'):
-            info = self.crawler.manga_info
-            if info:
-                self.task.manga_info = info.to_dict()
-                if self.task_record:
-                    self.task_record.manga_info = info.to_dict()
-        elif self.crawler and hasattr(self.crawler, '_manga_info'):
-            info = self.crawler._manga_info
-            if info:
-                self.task.manga_info = info.to_dict()
-                if self.task_record:
-                    self.task_record.manga_info = info.to_dict()
-
-    async def _do_download(self):
-        """执行下载"""
-        url = self.task.url
-
-        self.task.message = "解析漫画信息..."
-        self.task.status = "downloading"
-        if self.task_record:
-            self.task_record.status = "downloading"
-            self.task_record.message = "解析漫画信息..."
-            save_task(self.task_record)
-
-        # 获取漫画信息
-        try:
-            info = await self.crawler.get_info(url)
-            self.task.manga_info = info.to_dict()
-            self.task.platform = info.platform
-            if self.task_record:
-                self.task_record.manga_info = info.to_dict()
-                self.task_record.platform = info.platform
-                save_task(self.task_record)
-        except Exception as e:
-            # 如果获取信息失败，继续尝试下载
-            if self.task_record:
-                save_task(self.task_record)
-
-        # 定义进度回调
-        def on_progress(progress: DownloadProgress):
-            self.task.progress = progress.current
-            self.task.total = progress.total
-            self.task.message = progress.message
-            if progress.status:
-                self.task.status = progress.status
-            if self.task_record:
-                self.task_record.status = progress.status
-                self.task_record.progress = progress.current
-                self.task_record.total = progress.total
-                self.task_record.message = progress.message
-                save_task(self.task_record)
-
-        # 执行下载
-        output_path = await self.crawler.download(
-            url,
-            str(DOWNLOADS_DIR),
-            progress_callback=on_progress
-        )
-
-        self.task.output_path = output_path
-        if self.task_record:
-            self.task_record.output_path = output_path
-
-        # 更新漫画信息（合并逻辑）
-        self._update_manga_info()
-
-        # 打包 zip（使用线程池异步执行）
-        self.task.message = "正在打包..."
-        if self.task_record:
-            self.task_record.message = "正在打包..."
-            save_task(self.task_record)
-        if output_path and Path(output_path).exists():
-            save_dir = Path(output_path)
-            zip_name = save_dir.name
-            zip_path = DOWNLOADS_DIR / f"{zip_name}.zip"
-
-            # 异步打包
-            loop = asyncio.get_running_loop()
-            def zip_folder_sync():
-                with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zf:
-                    for file in sorted(save_dir.iterdir()):
-                        if file.is_file():
-                            zf.write(file, file.name)
-            await loop.run_in_executor(None, zip_folder_sync)
-
-            self.task.zip_path = str(zip_path)
-            if self.task_record:
-                self.task_record.zip_path = str(zip_path)
-
-        self.task.status = "completed"
-        self.task.message = f"下载完成! 共 {self.task.total} 张图片"
-        if self.task_record:
-            self.task_record.status = "completed"
-            self.task_record.message = f"下载完成! 共 {self.task.total} 张图片"
-            save_task(self.task_record)
-
-        # 添加到历史（使用线程安全的方法）
-        if self.task.manga_info:
-            history_item = {
-                "task_id": self.task.task_id,
-                "title": self.task.manga_info.get("title", "未知漫画"),
-                "chapter": self.task.manga_info.get("chapter", ""),
-                "platform": self.task.platform,
-                "zip_path": self.task.zip_path,
-                "page_count": self.task.total,
-                "created_at": self.task.created_at.isoformat()
-            }
-            await add_history_item(history_item)
-
-
 app.include_router(
     build_download_router(
         get_crawler_for_url=lambda url: get_crawler(url),
         create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
-        create_downloader=lambda task: MangaDownloader(task),
+        create_downloader=lambda task: MangaDownloader(
+            task,
+            downloads_dir=DOWNLOADS_DIR,
+            get_crawler_for_url=lambda url: get_crawler(url),
+            init_browser_for_crawler=lambda crawler, platform: init_browser_for_crawler(
+                crawler=crawler,
+                platform=platform,
+                browser_pool=_browser_pool,
+                browser_pool_lock=_browser_pool_lock,
+                get_config=config.get_config,
+                logger=logger,
+            ),
+            release_browser_for_platform=lambda platform: release_browser_for_platform(
+                _browser_pool,
+                platform,
+                asyncio.get_running_loop().time(),
+            ),
+            save_task_record=save_task,
+            add_history_item=lambda history_item: add_history_item(
+                history_item,
+                state_lock=_state_lock,
+                get_task_record=lambda task_id: get_task(task_id),
+                save_task_record=save_task,
+                get_total_completed_count=lambda: get_total_count(status="completed"),
+                get_history_tasks=lambda limit: get_history_tasks(limit=limit),
+                delete_task_record=lambda task_id: delete_task(task_id),
+                get_history_max_items=lambda: (
+                    config.get_config().history.max_items
+                    if config.get_config().history.max_items > 0
+                    else 100
+                ),
+            ),
+            task_last_sse_state=task_last_sse_state,
+            tasks=tasks,
+        ),
         get_task_record=lambda task_id: get_task(task_id),
         task_last_sse_state=task_last_sse_state,
         get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
@@ -669,7 +270,18 @@ async def start_browser_cleanup_scheduler():
     cfg = config.get_config()
     cleanup_interval = getattr(cfg.crawler, 'browser_cleanup_interval', 60)
 
-    _browser_cleanup_task = asyncio.create_task(schedule_browser_cleanup(cleanup_interval))
+    _browser_cleanup_task = asyncio.create_task(
+        schedule_browser_cleanup(
+            interval=cleanup_interval,
+            cleanup_browser_pool=lambda: cleanup_browser_pool(
+                browser_pool=_browser_pool,
+                browser_pool_lock=_browser_pool_lock,
+                get_config=config.get_config,
+                logger=logger,
+            ),
+            logger=logger,
+        )
+    )
     logger.info(f"浏览器池清理调度器已启动 (interval={cleanup_interval}s)")
 
 
@@ -692,22 +304,11 @@ async def on_startup():
 
 async def on_shutdown():
     """应用关闭时的清理"""
-    # 关闭所有浏览器
-    async with _browser_pool_lock:
-        for platform, browser_info in list(_browser_pool.items()):
-            try:
-                logger.info(f"关闭平台 {platform} 的浏览器")
-                if browser_info["page"]:
-                    await browser_info["page"].close()
-                if browser_info["context"]:
-                    await browser_info["context"].close()
-                if browser_info["browser"]:
-                    await browser_info["browser"].close()
-                if browser_info["playwright"]:
-                    await browser_info["playwright"].stop()
-            except Exception as e:
-                logger.error(f"关闭平台 {platform} 浏览器失败: {e}")
-        _browser_pool.clear()
+    await close_all_browsers(
+        browser_pool=_browser_pool,
+        browser_pool_lock=_browser_pool_lock,
+        logger=logger,
+    )
 
     # 停止清理调度器
     await stop_browser_cleanup_scheduler()
