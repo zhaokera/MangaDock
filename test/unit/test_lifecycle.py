@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import logging
 
 import pytest
@@ -68,6 +69,60 @@ async def test_start_scheduler_creates_runtime_cleanup_task():
     assert cleanup_calls["get_config"] is get_config
     assert cleanup_calls["logger"] is logger
     runtime.browser_cleanup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await runtime.browser_cleanup_task
+    assert runtime.browser_cleanup_task.cancelled() or runtime.browser_cleanup_task.done()
+
+
+@pytest.mark.asyncio
+async def test_on_startup_starts_browser_cleanup_scheduler():
+    runtime = create_runtime()
+    logger = logging.getLogger("test")
+    get_config = lambda: _config_with_interval(12)
+
+    recorded = {}
+
+    async def recording_cleanup_loop(*, interval, cleanup_browser_pool, logger):
+        recorded["interval"] = interval
+        recorded["cleanup_browser_pool"] = cleanup_browser_pool
+        recorded["logger"] = logger
+        while True:
+            await asyncio.sleep(3600)
+
+    async def recording_cleanup_browser_pool(*, browser_pool, browser_pool_lock, get_config, logger):
+        recorded["browser_pool"] = browser_pool
+        recorded["browser_pool_lock"] = browser_pool_lock
+        recorded["get_config"] = get_config
+        recorded["cleanup_logger"] = logger
+
+    _start_browser_cleanup_scheduler, _stop_browser_cleanup_scheduler, on_startup, _on_shutdown = create_server_lifecycle(
+        runtime=runtime,
+        browser_pool=runtime.browser_pool,
+        browser_pool_lock=runtime.browser_pool_lock,
+        cleanup_browser_pool=recording_cleanup_browser_pool,
+        close_all_browsers=lambda **kwargs: None,
+        schedule_browser_cleanup=recording_cleanup_loop,
+        get_config=get_config,
+        logger=logger,
+    )
+
+    await on_startup()
+    await asyncio.sleep(0)
+
+    assert runtime.browser_cleanup_task is not None
+    assert recorded["interval"] == 12
+    assert callable(recorded["cleanup_browser_pool"])
+    assert recorded["logger"] is logger
+    cleanup_result = recorded["cleanup_browser_pool"]()
+    if asyncio.iscoroutine(cleanup_result):
+        await cleanup_result
+    assert recorded["browser_pool"] is runtime.browser_pool
+    assert recorded["browser_pool_lock"] is runtime.browser_pool_lock
+    assert recorded["get_config"] is get_config
+    assert recorded["cleanup_logger"] is logger
+    runtime.browser_cleanup_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await runtime.browser_cleanup_task
 
 
 @pytest.mark.asyncio
