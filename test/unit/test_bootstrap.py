@@ -43,6 +43,11 @@ def test_create_server_application_registers_core_routes():
     routes = {route.path for route in app.routes}
     assert "/" in routes
     assert "/api/download" in routes
+    assert "/api/history" in routes
+    assert "/api/queue" in routes
     assert "/api/search" in routes
     assert "/api/parse" in routes
+    assert "/api/platforms" in routes
     assert "/api/auth/login" in routes
+    assert "/api/auth/platforms" in routes
+    assert "/api/resume/list" in routes
