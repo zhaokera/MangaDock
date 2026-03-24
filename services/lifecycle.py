@@ -43,6 +43,7 @@ def create_server_lifecycle(
                 logger=logger,
             )
         )
+        logger.info(f"浏览器池清理调度器已启动 (interval={cleanup_interval}s)")
 
     async def stop_browser_cleanup_scheduler() -> None:
         task = runtime.browser_cleanup_task
