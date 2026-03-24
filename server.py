@@ -92,19 +92,6 @@ class DownloadTask:
 
 # ============== 全局状态 ==============
 
-app = FastAPI(title="漫画下载器", description="支持多平台的漫画下载服务")
-
-# CORS 配置
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-app.include_router(platforms_router)
-
-# 任务存储
 tasks: dict[str, DownloadTask] = {}
 
 # SSE 连接管理 - 存储每个任务的最后发送状态
@@ -129,108 +116,147 @@ init_db()
 DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
+def _history_max_items() -> int:
+    value = config.get_config().history.max_items
+    return value if value > 0 else 100
 
-app.include_router(
-    build_download_router(
-        get_crawler_for_url=lambda url: get_crawler(url),
-        create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
-        create_downloader=lambda task: MangaDownloader(
-            task,
-            downloads_dir=DOWNLOADS_DIR,
-            get_crawler_for_url=lambda url: get_crawler(url),
-            init_browser_for_crawler=lambda crawler, platform: init_browser_for_crawler(
-                crawler=crawler,
-                platform=platform,
-                browser_pool=_browser_pool,
-                browser_pool_lock=_browser_pool_lock,
-                get_config=config.get_config,
-                logger=logger,
-            ),
-            release_browser_for_platform=lambda platform: release_browser_for_platform(
-                _browser_pool,
-                platform,
-                asyncio.get_running_loop().time(),
-            ),
-            save_task_record=save_task,
-            add_history_item=lambda history_item: add_history_item(
-                history_item,
-                state_lock=_state_lock,
-                get_task_record=lambda task_id: get_task(task_id),
-                save_task_record=save_task,
-                get_total_completed_count=lambda: get_total_count(status="completed"),
-                get_history_tasks=lambda limit: get_history_tasks(limit=limit),
-                delete_task_record=lambda task_id: delete_task(task_id),
-                get_history_max_items=lambda: (
-                    config.get_config().history.max_items
-                    if config.get_config().history.max_items > 0
-                    else 100
-                ),
-            ),
-            task_last_sse_state=task_last_sse_state,
-            tasks=tasks,
-        ),
-        get_task_record=lambda task_id: get_task(task_id),
-        task_last_sse_state=task_last_sse_state,
-        get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
+
+def _get_crawler_for_url(url: str):
+    return get_crawler(url)
+
+
+def _get_searcher_for_platform(platform: str):
+    return get_searcher(platform)
+
+
+def _search_all_platforms(keyword: str, limit: int):
+    return search_all_platforms(keyword, limit_per_platform=limit)
+
+
+def _get_manga_searcher_for_platform(platform: str):
+    return get_manga_searcher(platform)
+
+
+def _get_auth_manager_instance():
+    return get_auth_manager()
+
+
+def _get_resume_manager_instance():
+    return get_resume_manager()
+
+
+def _get_crawler_by_platform_name(platform: str):
+    return get_crawler_by_platform(platform)
+
+
+async def _bind_crawler_browser(crawler, platform: str) -> None:
+    await init_browser_for_crawler(
+        crawler=crawler,
+        platform=platform,
+        browser_pool=_browser_pool,
+        browser_pool_lock=_browser_pool_lock,
+        get_config=config.get_config,
+        logger=logger,
     )
-)
-app.include_router(
-    build_history_router(
+
+
+def _release_platform_browser(platform: str) -> None:
+    release_browser_for_platform(
+        _browser_pool,
+        platform,
+        asyncio.get_running_loop().time(),
+    )
+
+
+async def _add_history_record(history_item: dict) -> bool:
+    return await add_history_item(
+        history_item,
+        state_lock=_state_lock,
+        get_task_record=get_task,
+        save_task_record=save_task,
+        get_total_completed_count=lambda: get_total_count(status="completed"),
         get_history_tasks=lambda limit: get_history_tasks(limit=limit),
-        get_history_max_items=lambda: (
-            config.get_config().history.max_items
-            if config.get_config().history.max_items > 0
-            else 100
-        ),
-        get_task_record=lambda task_id: get_task(task_id),
-        delete_task_record=lambda task_id: delete_task(task_id),
-        delete_history_tasks=lambda platforms: delete_history_tasks(platforms),
+        delete_task_record=delete_task,
+        get_history_max_items=_history_max_items,
     )
-)
-app.include_router(
-    build_queue_router(
-        download_queue=_download_queue,
-        priorities=_download_queue_priority,
-        queue_lock=_download_queue_lock,
-    )
-)
-app.include_router(
-    build_search_router(
-        search_all_platforms=lambda keyword, limit: search_all_platforms(keyword, limit_per_platform=limit),
-        get_searcher=lambda platform: get_searcher(platform),
-        get_manga_searcher=lambda platform: get_manga_searcher(platform),
-    )
-)
-app.include_router(
-    build_parse_router(
-        get_crawler_for_url=lambda url: get_crawler(url),
-    )
-)
 
 
-# ============== API 端点 ==============
-
-@app.get("/")
-async def root():
-    return {
-        "message": "漫画下载器 API",
-        "version": "2.0",
-        "description": "支持多平台漫画下载"
-    }
-
-# ============== 认证 API ==============
-
-app.include_router(
-    build_auth_router(
-        get_auth_manager=lambda: get_auth_manager(),
-        get_crawler_by_platform=lambda platform: get_crawler_by_platform(platform),
+def _build_downloader(task: DownloadTask) -> MangaDownloader:
+    return MangaDownloader(
+        task,
+        downloads_dir=DOWNLOADS_DIR,
+        get_crawler_for_url=_get_crawler_for_url,
+        init_browser_for_crawler=_bind_crawler_browser,
+        release_browser_for_platform=_release_platform_browser,
+        save_task_record=save_task,
+        add_history_item=_add_history_record,
+        task_last_sse_state=task_last_sse_state,
+        tasks=tasks,
     )
-)
-app.include_router(
-    build_resume_router(
-        get_resume_manager=lambda: get_resume_manager(),
+
+
+def _register_root_route(app: FastAPI) -> None:
+    @app.get("/")
+    async def root():
+        return {
+            "message": "漫画下载器 API",
+            "version": "2.0",
+            "description": "支持多平台漫画下载",
+        }
+
+
+def _register_routes(app: FastAPI) -> None:
+    app.include_router(platforms_router)
+    app.include_router(
+        build_download_router(
+            get_crawler_for_url=_get_crawler_for_url,
+            create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
+            create_downloader=_build_downloader,
+            get_task_record=get_task,
+            task_last_sse_state=task_last_sse_state,
+            get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
+        )
     )
-)
+    app.include_router(
+        build_history_router(
+            get_history_tasks=lambda limit: get_history_tasks(limit=limit),
+            get_history_max_items=_history_max_items,
+            get_task_record=get_task,
+            delete_task_record=delete_task,
+            delete_history_tasks=delete_history_tasks,
+        )
+    )
+    app.include_router(
+        build_queue_router(
+            download_queue=_download_queue,
+            priorities=_download_queue_priority,
+            queue_lock=_download_queue_lock,
+        )
+    )
+    app.include_router(
+        build_search_router(
+            search_all_platforms=_search_all_platforms,
+            get_searcher=_get_searcher_for_platform,
+            get_manga_searcher=_get_manga_searcher_for_platform,
+        )
+    )
+    app.include_router(
+        build_parse_router(
+            get_crawler_for_url=_get_crawler_for_url,
+        )
+    )
+    app.include_router(
+        build_auth_router(
+            get_auth_manager=_get_auth_manager_instance,
+            get_crawler_by_platform=_get_crawler_by_platform_name,
+        )
+    )
+    app.include_router(
+        build_resume_router(
+            get_resume_manager=_get_resume_manager_instance,
+        )
+    )
+    _register_root_route(app)
 
 
 # ============== 启动 ==============
@@ -290,9 +316,26 @@ async def on_shutdown():
     await stop_browser_cleanup_scheduler()
 
 
-# 注册生命周期事件
-app.add_event_handler("startup", on_startup)
-app.add_event_handler("shutdown", on_shutdown)
+def _register_lifecycle(app: FastAPI) -> None:
+    app.add_event_handler("startup", on_startup)
+    app.add_event_handler("shutdown", on_shutdown)
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(title="漫画下载器", description="支持多平台的漫画下载服务")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+    _register_routes(app)
+    _register_lifecycle(app)
+    return app
+
+
+app = create_app()
 
 
 # ============== 启动 ==============
