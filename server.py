@@ -15,7 +15,6 @@ from typing import Optional
 
 try:
     from fastapi import FastAPI
-    from fastapi.middleware.cors import CORSMiddleware
 except ImportError:
     print("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
@@ -57,6 +56,7 @@ from routes.platforms import router as platforms_router
 from routes.queue import build_queue_router
 from routes.resume import build_resume_router
 from routes.search import build_search_router
+from services.app_factory import create_application
 from services.browser_pool import (
     cleanup_browser_pool,
     close_all_browsers,
@@ -176,74 +176,65 @@ def _build_downloader(task: DownloadTask) -> MangaDownloader:
     )
 
 
-def _register_root_route(app: FastAPI) -> None:
-    @app.get("/")
-    async def root():
-        return {
-            "message": "漫画下载器 API",
-            "version": "2.0",
-            "description": "支持多平台漫画下载",
-        }
+def _build_download_router():
+    return build_download_router(
+        get_crawler_for_url=_get_crawler_for_url,
+        create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
+        create_downloader=_build_downloader,
+        get_task_record=get_task,
+        task_last_sse_state=task_last_sse_state,
+        get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
+    )
 
 
-def _register_routes(app: FastAPI) -> None:
-    app.include_router(platforms_router)
-    app.include_router(
-        build_download_router(
-            get_crawler_for_url=_get_crawler_for_url,
-            create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
-            create_downloader=_build_downloader,
-            get_task_record=get_task,
-            task_last_sse_state=task_last_sse_state,
-            get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
-        )
+def _build_history_router():
+    return build_history_router(
+        get_history_tasks=lambda limit: get_history_tasks(limit=limit),
+        get_history_max_items=_history_max_items,
+        get_task_record=get_task,
+        delete_task_record=delete_task,
+        delete_history_tasks=delete_history_tasks,
     )
-    app.include_router(
-        build_history_router(
-            get_history_tasks=lambda limit: get_history_tasks(limit=limit),
-            get_history_max_items=_history_max_items,
-            get_task_record=get_task,
-            delete_task_record=delete_task,
-            delete_history_tasks=delete_history_tasks,
-        )
+
+
+def _build_queue_router():
+    return build_queue_router(
+        download_queue=_download_queue,
+        priorities=_download_queue_priority,
+        queue_lock=_download_queue_lock,
     )
-    app.include_router(
-        build_queue_router(
-            download_queue=_download_queue,
-            priorities=_download_queue_priority,
-            queue_lock=_download_queue_lock,
-        )
+
+
+def _build_search_router():
+    return build_search_router(
+        search_all_platforms=_search_all_platforms,
+        get_searcher=_get_searcher_for_platform,
+        get_manga_searcher=_get_manga_searcher_for_platform,
     )
-    app.include_router(
-        build_search_router(
-            search_all_platforms=_search_all_platforms,
-            get_searcher=_get_searcher_for_platform,
-            get_manga_searcher=_get_manga_searcher_for_platform,
-        )
+
+
+def _build_parse_router():
+    return build_parse_router(
+        get_crawler_for_url=_get_crawler_for_url,
     )
-    app.include_router(
-        build_parse_router(
-            get_crawler_for_url=_get_crawler_for_url,
-        )
+
+
+def _build_auth_router():
+    return build_auth_router(
+        get_auth_manager=_get_auth_manager_instance,
+        get_crawler_by_platform=_get_crawler_by_platform_name,
     )
-    app.include_router(
-        build_auth_router(
-            get_auth_manager=_get_auth_manager_instance,
-            get_crawler_by_platform=_get_crawler_by_platform_name,
-        )
+
+
+def _build_resume_router():
+    return build_resume_router(
+        get_resume_manager=_get_resume_manager_instance,
     )
-    app.include_router(
-        build_resume_router(
-            get_resume_manager=_get_resume_manager_instance,
-        )
-    )
-    _register_root_route(app)
 
 
 # ============== 启动 ==============
 async def start_browser_cleanup_scheduler():
     """启动浏览器池清理调度器（后台任务）"""
-    # 从配置获取清理间隔，默认 60 秒
     cfg = config.get_config()
     cleanup_interval = getattr(cfg.crawler, 'browser_cleanup_interval', 60)
 
@@ -285,28 +276,24 @@ async def on_shutdown():
         browser_pool_lock=_browser_pool_lock,
         logger=logger,
     )
-
-    # 停止清理调度器
     await stop_browser_cleanup_scheduler()
 
 
-def _register_lifecycle(app: FastAPI) -> None:
-    app.add_event_handler("startup", on_startup)
-    app.add_event_handler("shutdown", on_shutdown)
-
-
 def create_app() -> FastAPI:
-    app = FastAPI(title="漫画下载器", description="支持多平台的漫画下载服务")
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+    return create_application(
+        title="漫画下载器",
+        description="支持多平台的漫画下载服务",
+        platforms_router=platforms_router,
+        download_router_factory=_build_download_router,
+        history_router_factory=_build_history_router,
+        queue_router_factory=_build_queue_router,
+        search_router_factory=_build_search_router,
+        parse_router_factory=_build_parse_router,
+        auth_router_factory=_build_auth_router,
+        resume_router_factory=_build_resume_router,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
     )
-    _register_routes(app)
-    _register_lifecycle(app)
-    return app
 
 
 app = create_app()
