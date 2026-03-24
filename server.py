@@ -10,6 +10,7 @@ import os
 import re
 import logging
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -90,24 +91,36 @@ class DownloadTask:
         self.created_at: datetime = datetime.now()
 
 
+@dataclass
+class AppRuntime:
+    tasks: dict[str, DownloadTask] = field(default_factory=dict)
+    task_last_sse_state: dict[str, dict] = field(default_factory=dict)
+    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    browser_pool: dict[str, dict] = field(default_factory=dict)
+    browser_pool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    download_queue: dict[str, DownloadTask] = field(default_factory=dict)
+    download_queue_priority: dict[str, int] = field(default_factory=dict)
+    download_queue_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    browser_cleanup_task: Optional[asyncio.Task] = None
+
+
+def create_runtime() -> AppRuntime:
+    return AppRuntime()
+
+
 # ============== 全局状态 ==============
 
-tasks: dict[str, DownloadTask] = {}
+runtime = create_runtime()
 
-# SSE 连接管理 - 存储每个任务的最后发送状态
-task_last_sse_state: dict[str, dict] = {}
-
-# 全局状态锁 - 保护并发访问
-_state_lock = asyncio.Lock()
-
-# 浏览器池 - 存储每个爬虫类型的浏览器实例
-_browser_pool: dict[str, dict] = {}
-_browser_pool_lock = asyncio.Lock()
-
-# 下载队列 - 任务优先级队列
-_download_queue: dict[str, DownloadTask] = {}
-_download_queue_priority: dict[str, int] = {}
-_download_queue_lock = asyncio.Lock()
+# 兼容现有测试与调用方的模块级状态别名
+tasks = runtime.tasks
+task_last_sse_state = runtime.task_last_sse_state
+_state_lock = runtime.state_lock
+_browser_pool = runtime.browser_pool
+_browser_pool_lock = runtime.browser_pool_lock
+_download_queue = runtime.download_queue
+_download_queue_priority = runtime.download_queue_priority
+_download_queue_lock = runtime.download_queue_lock
 
 # 初始化数据库
 init_db()
@@ -260,19 +273,13 @@ def _register_routes(app: FastAPI) -> None:
 
 
 # ============== 启动 ==============
-
-# 浏览器池清理任务句柄
-_browser_cleanup_task: Optional[asyncio.Task] = None
-
-
 async def start_browser_cleanup_scheduler():
     """启动浏览器池清理调度器（后台任务）"""
-    global _browser_cleanup_task
     # 从配置获取清理间隔，默认 60 秒
     cfg = config.get_config()
     cleanup_interval = getattr(cfg.crawler, 'browser_cleanup_interval', 60)
 
-    _browser_cleanup_task = asyncio.create_task(
+    runtime.browser_cleanup_task = asyncio.create_task(
         schedule_browser_cleanup(
             interval=cleanup_interval,
             cleanup_browser_pool=lambda: cleanup_browser_pool(
@@ -289,14 +296,13 @@ async def start_browser_cleanup_scheduler():
 
 async def stop_browser_cleanup_scheduler():
     """停止浏览器池清理调度器"""
-    global _browser_cleanup_task
-    if _browser_cleanup_task:
-        _browser_cleanup_task.cancel()
+    if runtime.browser_cleanup_task:
+        runtime.browser_cleanup_task.cancel()
         try:
-            await _browser_cleanup_task
+            await runtime.browser_cleanup_task
         except asyncio.CancelledError:
             pass
-        _browser_cleanup_task = None
+        runtime.browser_cleanup_task = None
 
 
 async def on_startup():
