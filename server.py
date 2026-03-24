@@ -48,15 +48,6 @@ from crawlers.resume import get_resume_manager
 from crawlers.search import search_all_platforms, get_searcher
 from crawlers.manga_search import get_manga_searcher
 from crawlers.registry import get_crawler_by_platform
-from routes.auth import build_auth_router
-from routes.downloads import build_download_router
-from routes.history import build_history_router
-from routes.parse import build_parse_router
-from routes.platforms import router as platforms_router
-from routes.queue import build_queue_router
-from routes.resume import build_resume_router
-from routes.search import build_search_router
-from services.app_factory import create_application
 from services.browser_pool import (
     cleanup_browser_pool,
     close_all_browsers,
@@ -64,7 +55,8 @@ from services.browser_pool import (
     release_browser_for_platform,
     schedule_browser_cleanup,
 )
-from services.downloader import MangaDownloader, add_history_item
+from services.bootstrap import create_server_application
+from services.downloader import add_history_item
 from services.state import AppRuntime, DownloadTask, create_runtime
 from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
@@ -96,140 +88,6 @@ init_db()
 # 下载目录（从配置获取）
 DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
-
-def _history_max_items() -> int:
-    value = config.get_config().history.max_items
-    return value if value > 0 else 100
-
-
-def _get_crawler_for_url(url: str):
-    return get_crawler(url)
-
-
-def _get_searcher_for_platform(platform: str):
-    return get_searcher(platform)
-
-
-def _search_all_platforms(keyword: str, limit: int):
-    return search_all_platforms(keyword, limit_per_platform=limit)
-
-
-def _get_manga_searcher_for_platform(platform: str):
-    return get_manga_searcher(platform)
-
-
-def _get_auth_manager_instance():
-    return get_auth_manager()
-
-
-def _get_resume_manager_instance():
-    return get_resume_manager()
-
-
-def _get_crawler_by_platform_name(platform: str):
-    return get_crawler_by_platform(platform)
-
-
-async def _bind_crawler_browser(crawler, platform: str) -> None:
-    await init_browser_for_crawler(
-        crawler=crawler,
-        platform=platform,
-        browser_pool=_browser_pool,
-        browser_pool_lock=_browser_pool_lock,
-        get_config=config.get_config,
-        logger=logger,
-    )
-
-
-def _release_platform_browser(platform: str) -> None:
-    release_browser_for_platform(
-        _browser_pool,
-        platform,
-        asyncio.get_running_loop().time(),
-    )
-
-
-async def _add_history_record(history_item: dict) -> bool:
-    return await add_history_item(
-        history_item,
-        state_lock=_state_lock,
-        get_task_record=get_task,
-        save_task_record=save_task,
-        get_total_completed_count=lambda: get_total_count(status="completed"),
-        get_history_tasks=lambda limit: get_history_tasks(limit=limit),
-        delete_task_record=delete_task,
-        get_history_max_items=_history_max_items,
-    )
-
-
-def _build_downloader(task: DownloadTask) -> MangaDownloader:
-    return MangaDownloader(
-        task,
-        downloads_dir=DOWNLOADS_DIR,
-        get_crawler_for_url=_get_crawler_for_url,
-        init_browser_for_crawler=_bind_crawler_browser,
-        release_browser_for_platform=_release_platform_browser,
-        save_task_record=save_task,
-        add_history_item=_add_history_record,
-        task_last_sse_state=task_last_sse_state,
-        tasks=tasks,
-    )
-
-
-def _build_download_router():
-    return build_download_router(
-        get_crawler_for_url=_get_crawler_for_url,
-        create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
-        create_downloader=_build_downloader,
-        get_task_record=get_task,
-        task_last_sse_state=task_last_sse_state,
-        get_heartbeat_interval=lambda: config.get_config().sse.heartbeat_interval,
-    )
-
-
-def _build_history_router():
-    return build_history_router(
-        get_history_tasks=lambda limit: get_history_tasks(limit=limit),
-        get_history_max_items=_history_max_items,
-        get_task_record=get_task,
-        delete_task_record=delete_task,
-        delete_history_tasks=delete_history_tasks,
-    )
-
-
-def _build_queue_router():
-    return build_queue_router(
-        download_queue=_download_queue,
-        priorities=_download_queue_priority,
-        queue_lock=_download_queue_lock,
-    )
-
-
-def _build_search_router():
-    return build_search_router(
-        search_all_platforms=_search_all_platforms,
-        get_searcher=_get_searcher_for_platform,
-        get_manga_searcher=_get_manga_searcher_for_platform,
-    )
-
-
-def _build_parse_router():
-    return build_parse_router(
-        get_crawler_for_url=_get_crawler_for_url,
-    )
-
-
-def _build_auth_router():
-    return build_auth_router(
-        get_auth_manager=_get_auth_manager_instance,
-        get_crawler_by_platform=_get_crawler_by_platform_name,
-    )
-
-
-def _build_resume_router():
-    return build_resume_router(
-        get_resume_manager=_get_resume_manager_instance,
-    )
 
 
 # ============== 启动 ==============
@@ -280,17 +138,28 @@ async def on_shutdown():
 
 
 def create_app() -> FastAPI:
-    return create_application(
-        title="漫画下载器",
-        description="支持多平台的漫画下载服务",
-        platforms_router=platforms_router,
-        download_router_factory=_build_download_router,
-        history_router_factory=_build_history_router,
-        queue_router_factory=_build_queue_router,
-        search_router_factory=_build_search_router,
-        parse_router_factory=_build_parse_router,
-        auth_router_factory=_build_auth_router,
-        resume_router_factory=_build_resume_router,
+    return create_server_application(
+        runtime=runtime,
+        logger=logger,
+        downloads_dir=DOWNLOADS_DIR,
+        get_config=config.get_config,
+        get_task_record=get_task,
+        save_task_record=save_task,
+        delete_task_record=delete_task,
+        delete_history_tasks=delete_history_tasks,
+        get_history_tasks=get_history_tasks,
+        get_total_count=get_total_count,
+        get_crawler_for_url=get_crawler,
+        get_searcher=get_searcher,
+        search_all_platforms=search_all_platforms,
+        get_manga_searcher=get_manga_searcher,
+        get_auth_manager=get_auth_manager,
+        get_resume_manager=get_resume_manager,
+        get_crawler_by_platform=get_crawler_by_platform,
+        init_browser_for_crawler=init_browser_for_crawler,
+        release_browser_for_platform=release_browser_for_platform,
+        add_history_item=add_history_item,
+        create_download_task=DownloadTask,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
     )
