@@ -1,6 +1,16 @@
 from fastapi import FastAPI
 
 import server
+from routes.auth import build_auth_router
+from routes.downloads import build_download_router
+from routes.history import build_history_router
+from routes.parse import build_parse_router
+from routes.platforms import router as platforms_router
+from routes.queue import build_queue_router
+from routes.resume import build_resume_router
+from routes.search import build_search_router
+from services.app_factory import create_application
+from services.downloader import MangaDownloader
 
 
 def test_create_app_delegates_to_bootstrap_with_runtime_dependencies(monkeypatch):
@@ -39,6 +49,19 @@ def test_create_app_delegates_to_bootstrap_with_runtime_dependencies(monkeypatch
     assert captured["create_download_task"] is server.DownloadTask
     assert captured["on_startup"] is server.on_startup
     assert captured["on_shutdown"] is server.on_shutdown
+
+
+def test_server_preserves_assembly_compatibility_exports():
+    assert server.build_auth_router is build_auth_router
+    assert server.build_download_router is build_download_router
+    assert server.build_history_router is build_history_router
+    assert server.build_parse_router is build_parse_router
+    assert server.platforms_router is platforms_router
+    assert server.build_queue_router is build_queue_router
+    assert server.build_resume_router is build_resume_router
+    assert server.build_search_router is build_search_router
+    assert server.create_application is create_application
+    assert server.MangaDownloader is MangaDownloader
 
 
 create_app = server.create_app

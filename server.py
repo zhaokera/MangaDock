@@ -6,12 +6,8 @@ FastAPI 后端 + SSE 进度推送
 """
 
 import asyncio
-import os
-import re
 import logging
-from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional
 
 try:
     from fastapi import FastAPI
@@ -48,6 +44,15 @@ from crawlers.resume import get_resume_manager
 from crawlers.search import search_all_platforms, get_searcher
 from crawlers.manga_search import get_manga_searcher
 from crawlers.registry import get_crawler_by_platform
+from routes.auth import build_auth_router
+from routes.downloads import build_download_router
+from routes.history import build_history_router
+from routes.parse import build_parse_router
+from routes.platforms import router as platforms_router
+from routes.queue import build_queue_router
+from routes.resume import build_resume_router
+from routes.search import build_search_router
+from services.app_factory import create_application
 from services.browser_pool import (
     cleanup_browser_pool,
     close_all_browsers,
@@ -56,7 +61,7 @@ from services.browser_pool import (
     schedule_browser_cleanup,
 )
 from services.bootstrap import create_server_application
-from services.downloader import add_history_item
+from services.downloader import MangaDownloader, add_history_item
 from services.state import AppRuntime, DownloadTask, create_runtime
 from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
