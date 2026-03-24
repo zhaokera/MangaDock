@@ -10,7 +10,6 @@ import os
 import re
 import logging
 from datetime import datetime, timedelta
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -66,6 +65,7 @@ from services.browser_pool import (
     schedule_browser_cleanup,
 )
 from services.downloader import MangaDownloader, add_history_item
+from services.state import AppRuntime, DownloadTask, create_runtime
 from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
 
@@ -74,38 +74,6 @@ import config
 
 # 加载配置
 CONFIG = config.get_config()
-
-class DownloadTask:
-    def __init__(self, task_id: str, url: str, platform: str = ""):
-        self.task_id = task_id
-        self.url = url
-        self.platform = platform
-        self.status: str = "pending"  # pending, downloading, completed, failed
-        self.progress: int = 0
-        self.total: int = 0
-        self.message: str = ""
-        self.manga_info: Optional[dict] = None
-        self.output_path: Optional[str] = None
-        self.zip_path: Optional[str] = None
-        self.error: Optional[str] = None
-        self.created_at: datetime = datetime.now()
-
-
-@dataclass
-class AppRuntime:
-    tasks: dict[str, DownloadTask] = field(default_factory=dict)
-    task_last_sse_state: dict[str, dict] = field(default_factory=dict)
-    state_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    browser_pool: dict[str, dict] = field(default_factory=dict)
-    browser_pool_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    download_queue: dict[str, DownloadTask] = field(default_factory=dict)
-    download_queue_priority: dict[str, int] = field(default_factory=dict)
-    download_queue_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    browser_cleanup_task: Optional[asyncio.Task] = None
-
-
-def create_runtime() -> AppRuntime:
-    return AppRuntime()
 
 
 # ============== 全局状态 ==============
