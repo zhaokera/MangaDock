@@ -36,7 +36,7 @@ download:
 logging:
   level: "INFO"  # DEBUG, INFO, WARNING, ERROR
   format: "%(asctime)s [%(levelname)s] %(message)s"
-  file: "downloads/download.log"
+  file: "logs/download.log"
 
 # 爬虫配置
 crawler:

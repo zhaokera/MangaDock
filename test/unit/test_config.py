@@ -10,6 +10,7 @@ from config import (
     Config,
     NetworkConfig,
     DownloadConfig,
+    LoggingConfig,
     CrawlerConfig,
     SSEConfig,
     HistoryConfig,
@@ -47,6 +48,12 @@ class TestConfigDataclasses:
         assert cfg.user_agent != ""
         assert isinstance(cfg.browser_args, list)
         assert len(cfg.browser_args) > 0
+
+    def test_logging_config_defaults(self):
+        """测试 LoggingConfig 默认值"""
+        cfg = LoggingConfig()
+        assert cfg.level == "INFO"
+        assert cfg.file == "logs/download.log"
 
     def test_sse_config_defaults(self):
         """测试 SSEConfig 默认值"""

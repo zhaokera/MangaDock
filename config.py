@@ -40,7 +40,7 @@ class DownloadConfig:
 class LoggingConfig:
     level: str = "INFO"
     format: str = "%(asctime)s [%(levelname)s] %(message)s"
-    file: str = "downloads/download.log"
+    file: str = "logs/download.log"
 
 
 @dataclass
