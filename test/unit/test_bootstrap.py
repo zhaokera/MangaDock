@@ -100,7 +100,7 @@ def test_create_server_application_public_signature_stays_lightweight():
     assert hints["get_auth_manager"] == Callable[[], AuthManager]
     assert hints["get_resume_manager"] == Callable[[], ResumeManager]
     assert hints["get_crawler_by_platform"] == Callable[[str], Optional[BaseCrawler]]
-    assert hints["create_download_task"] == Callable[[str, str, str], Any]
+    assert hints["create_download_task"] == Callable[[str, str, str], DownloadTask]
     assert hints["on_startup"] == Callable[[], Awaitable[None]]
     assert hints["on_shutdown"] == Callable[[], Awaitable[None]]
     assert hints["return"] is FastAPI

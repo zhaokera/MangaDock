@@ -25,7 +25,7 @@ from routes.resume import build_resume_router
 from routes.search import build_search_router
 from services.app_factory import create_application
 from services.downloader import MangaDownloader
-from services.state import AppRuntime
+from services.state import AppRuntime, DownloadTask
 
 
 BrowserPool = dict[str, dict[str, Any]]
@@ -41,8 +41,8 @@ GetAuthManager = Callable[[], AuthManager]
 GetResumeManager = Callable[[], ResumeManager]
 GetCrawlerByPlatform = Callable[[str], Optional[BaseCrawler]]
 InitBrowserForCrawler = Callable[..., Awaitable[None]]
-CreateDownloadTask = Callable[[str, str, str], Any]
 AsyncLifecycleHook = Callable[[], Awaitable[None]]
+CreateDownloadTask = Callable[[str, str, str], DownloadTask]
 
 
 def create_server_application(
