@@ -28,7 +28,7 @@ from services.downloader import MangaDownloader
 from services.state import AppRuntime, DownloadTask
 
 
-BrowserPool = dict[str, dict[str, Any]]
+BrowserPool = dict[str, dict]
 
 ReleaseBrowserForPlatform = Callable[[BrowserPool, str, float], None]
 GetConfig = Callable[[], Config]
