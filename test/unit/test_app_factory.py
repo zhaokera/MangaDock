@@ -72,8 +72,10 @@ def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
     sentinel_stop = object()
     sentinel_on_startup = object()
     sentinel_on_shutdown = object()
+    captured = {}
 
     def fake_create_server_lifecycle(**kwargs):
+        captured.update(kwargs)
         return (
             sentinel_start,
             sentinel_stop,
@@ -81,18 +83,27 @@ def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
             sentinel_on_shutdown,
         )
 
-    monkeypatch.setattr(
-        services.lifecycle,
-        "create_server_lifecycle",
-        fake_create_server_lifecycle,
-    )
-
     try:
-        reloaded_server = importlib.reload(server)
+        with monkeypatch.context() as lifecycle_patch:
+            lifecycle_patch.setattr(
+                services.lifecycle,
+                "create_server_lifecycle",
+                fake_create_server_lifecycle,
+            )
+
+            reloaded_server = importlib.reload(server)
         assert reloaded_server.start_browser_cleanup_scheduler is sentinel_start
         assert reloaded_server.stop_browser_cleanup_scheduler is sentinel_stop
         assert reloaded_server.on_startup is sentinel_on_startup
         assert reloaded_server.on_shutdown is sentinel_on_shutdown
+        assert captured["runtime"] is reloaded_server.runtime
+        assert captured["browser_pool"] is reloaded_server._browser_pool
+        assert captured["browser_pool_lock"] is reloaded_server._browser_pool_lock
+        assert captured["cleanup_browser_pool"] is reloaded_server.cleanup_browser_pool
+        assert captured["close_all_browsers"] is reloaded_server.close_all_browsers
+        assert captured["schedule_browser_cleanup"] is reloaded_server.schedule_browser_cleanup
+        assert captured["get_config"] is reloaded_server.config.get_config
+        assert captured["logger"] is reloaded_server.logger
     finally:
         importlib.reload(server)
 
