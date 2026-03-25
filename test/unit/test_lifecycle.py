@@ -1,11 +1,12 @@
 import asyncio
 import contextlib
 import logging
+from typing import Any, Awaitable, Callable, get_type_hints
 
 import pytest
 
 from services.lifecycle import create_server_lifecycle
-from services.state import create_runtime
+from services.state import AppRuntime, create_runtime
 
 
 async def _idle_cleanup_loop(*, interval, cleanup_browser_pool, logger):
@@ -19,6 +20,25 @@ def _config_with_interval(interval: int = 60):
         (),
         {"crawler": type("CrawlerCfg", (), {"browser_cleanup_interval": interval})()},
     )()
+
+
+def test_create_server_lifecycle_public_signature_is_typed():
+    hints = get_type_hints(create_server_lifecycle)
+
+    assert hints["runtime"] is AppRuntime
+    assert hints["browser_pool"] == dict[str, dict[str, Any]]
+    assert hints["browser_pool_lock"] is asyncio.Lock
+    assert hints["cleanup_browser_pool"] == Callable[..., Awaitable[Any]]
+    assert hints["close_all_browsers"] == Callable[..., Awaitable[Any]]
+    assert hints["schedule_browser_cleanup"] == Callable[..., Awaitable[Any]]
+    assert hints["get_config"] == Callable[[], Any]
+    assert hints["logger"] is logging.Logger
+    assert hints["return"] == tuple[
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+    ]
 
 
 @pytest.mark.asyncio

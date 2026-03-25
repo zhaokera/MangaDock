@@ -3,26 +3,37 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Awaitable, Callable
 
+from services.state import AppRuntime
 
+
+BrowserPool = dict[str, dict[str, Any]]
+AsyncLifecycleHook = Callable[[], Awaitable[None]]
 CleanupBrowserPool = Callable[..., Awaitable[Any]]
 CloseAllBrowsers = Callable[..., Awaitable[Any]]
 ScheduleBrowserCleanup = Callable[..., Awaitable[Any]]
 GetConfig = Callable[[], Any]
+LifecycleHooks = tuple[
+    AsyncLifecycleHook,
+    AsyncLifecycleHook,
+    AsyncLifecycleHook,
+    AsyncLifecycleHook,
+]
 
 
 def create_server_lifecycle(
     *,
-    runtime: Any,
-    browser_pool: dict[str, Any],
+    runtime: AppRuntime,
+    browser_pool: BrowserPool,
     browser_pool_lock: asyncio.Lock,
     cleanup_browser_pool: CleanupBrowserPool,
     close_all_browsers: CloseAllBrowsers,
     schedule_browser_cleanup: ScheduleBrowserCleanup,
     get_config: GetConfig,
-    logger: Any,
-):
+    logger: logging.Logger,
+) -> LifecycleHooks:
     """Create explicit startup and shutdown hooks for the server."""
 
     async def run_cleanup_browser_pool() -> Any:

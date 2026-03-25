@@ -1,9 +1,12 @@
+import asyncio
 import importlib
+from typing import Any, Awaitable, Callable, get_type_hints
 
 from fastapi import FastAPI
 
 import server
 import services.lifecycle
+from services.state import AppRuntime
 from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
@@ -65,6 +68,25 @@ def test_server_preserves_assembly_compatibility_exports():
     assert server.build_search_router is build_search_router
     assert server.create_application is create_application
     assert server.MangaDownloader is MangaDownloader
+
+
+def test_server_lifecycle_factory_public_signature_is_typed():
+    hints = get_type_hints(services.lifecycle.create_server_lifecycle)
+
+    assert hints["runtime"] is AppRuntime
+    assert hints["browser_pool"] == dict[str, dict[str, Any]]
+    assert hints["browser_pool_lock"] is asyncio.Lock
+    assert hints["cleanup_browser_pool"] == Callable[..., Awaitable[Any]]
+    assert hints["close_all_browsers"] == Callable[..., Awaitable[Any]]
+    assert hints["schedule_browser_cleanup"] == Callable[..., Awaitable[Any]]
+    assert hints["get_config"] == Callable[[], Any]
+    assert hints["logger"].__name__ == "Logger"
+    assert hints["return"] == tuple[
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+        Callable[[], Awaitable[None]],
+    ]
 
 
 def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
