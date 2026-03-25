@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable, Optional, Protocol
 
 from fastapi import FastAPI
 
+from crawlers import BaseCrawler, TaskRecord
+from crawlers.manga_search import BaseMangaSearcher
+from crawlers.search import BaseSearcher
 from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
@@ -18,33 +22,100 @@ from routes.resume import build_resume_router
 from routes.search import build_search_router
 from services.app_factory import create_application
 from services.downloader import MangaDownloader
+from services.state import AppRuntime, DownloadTask
+
+
+BrowserPool = dict[str, dict[str, Any]]
+
+
+class HistoryConfig(Protocol):
+    max_items: int
+
+
+class SseConfig(Protocol):
+    heartbeat_interval: float
+
+
+class CrawlerConfig(Protocol):
+    browser_args: list[str]
+    user_agent: str | None
+
+
+class AppConfig(Protocol):
+    history: HistoryConfig
+    sse: SseConfig
+    crawler: CrawlerConfig
+
+
+class AuthManagerLike(Protocol):
+    async def login(self, platform: str, credentials: dict[str, Any]) -> bool: ...
+    async def get_user_info(self, platform: str) -> dict[str, Any] | None: ...
+    async def logout(self, platform: str) -> bool: ...
+    async def is_logged_in(self, platform: str) -> bool: ...
+
+
+class ResumeManagerLike(Protocol):
+    async def load_progress(self, task_id: str) -> Any | None: ...
+    async def remove_progress(self, task_id: str) -> bool: ...
+    async def get_all_resumes(self) -> list[Any]: ...
+    async def cleanup_old_resumes(self, days: int = 7) -> int: ...
+
+
+class GetTotalCount(Protocol):
+    def __call__(self, status: str | None = None, platform: str | None = None) -> int: ...
+
+
+class InitBrowserForCrawler(Protocol):
+    def __call__(
+        self,
+        *,
+        crawler: BaseCrawler,
+        platform: str,
+        browser_pool: BrowserPool,
+        browser_pool_lock: asyncio.Lock,
+        get_config: Callable[[], AppConfig],
+        logger: logging.Logger,
+    ) -> Awaitable[None]: ...
+
+
+ReleaseBrowserForPlatform = Callable[[BrowserPool, str, float], None]
+GetConfig = Callable[[], AppConfig]
+GetTaskRecord = Callable[[str], Optional[TaskRecord]]
+GetCrawlerForUrl = Callable[[str], BaseCrawler]
+GetSearcher = Callable[[str], Optional[BaseSearcher]]
+GetMangaSearcher = Callable[[str], Optional[BaseMangaSearcher]]
+GetAuthManager = Callable[[], AuthManagerLike]
+GetResumeManager = Callable[[], ResumeManagerLike]
+GetCrawlerByPlatform = Callable[[str], Optional[BaseCrawler]]
+CreateDownloadTask = Callable[[str, str, str], DownloadTask]
+AsyncLifecycleHook = Callable[[], Awaitable[None]]
 
 
 def create_server_application(
     *,
-    runtime: Any,
-    logger: Any,
+    runtime: AppRuntime,
+    logger: logging.Logger,
     downloads_dir: Path,
-    get_config: Callable[[], Any],
-    get_task_record: Callable[[str], Any],
+    get_config: GetConfig,
+    get_task_record: GetTaskRecord,
     save_task_record: Callable[..., Any],
-    delete_task_record: Callable[[str], Any],
+    delete_task_record: Callable[[str], bool],
     delete_history_tasks: Callable[..., Any],
     get_history_tasks: Callable[..., Any],
-    get_total_count: Callable[..., int],
-    get_crawler_for_url: Callable[[str], Any],
-    get_searcher: Callable[[str], Any],
+    get_total_count: GetTotalCount,
+    get_crawler_for_url: GetCrawlerForUrl,
+    get_searcher: GetSearcher,
     search_all_platforms: Callable[..., Any],
-    get_manga_searcher: Callable[[str], Any],
-    get_auth_manager: Callable[[], Any],
-    get_resume_manager: Callable[[], Any],
-    get_crawler_by_platform: Callable[[str], Any],
-    init_browser_for_crawler: Callable[..., Any],
-    release_browser_for_platform: Callable[..., Any],
+    get_manga_searcher: GetMangaSearcher,
+    get_auth_manager: GetAuthManager,
+    get_resume_manager: GetResumeManager,
+    get_crawler_by_platform: GetCrawlerByPlatform,
+    init_browser_for_crawler: InitBrowserForCrawler,
+    release_browser_for_platform: ReleaseBrowserForPlatform,
     add_history_item: Callable[..., Any],
-    create_download_task: Callable[[str, str, str], Any],
-    on_startup: Callable[[], Any],
-    on_shutdown: Callable[[], Any],
+    create_download_task: CreateDownloadTask,
+    on_startup: AsyncLifecycleHook,
+    on_shutdown: AsyncLifecycleHook,
 ) -> FastAPI:
     def _history_max_items() -> int:
         value = get_config().history.max_items
