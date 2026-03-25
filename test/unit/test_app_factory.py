@@ -1,9 +1,18 @@
+import builtins
 import importlib
+from pathlib import Path
+import runpy
+from types import SimpleNamespace
 
 from fastapi import FastAPI
+import pytest
 
 import server
+import services.bootstrap
 import services.lifecycle
+import services.runtime
+from crawlers import get_crawler as get_crawler_for_url
+from crawlers.search import get_searcher, search_all_platforms
 from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
@@ -14,6 +23,8 @@ from routes.resume import build_resume_router
 from routes.search import build_search_router
 from services.app_factory import create_application
 from services.downloader import MangaDownloader
+from services.platforms import list_supported_platforms
+from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 
 
 def test_create_app_delegates_to_bootstrap_with_runtime_dependencies(monkeypatch):
@@ -65,6 +76,10 @@ def test_server_preserves_assembly_compatibility_exports():
     assert server.build_search_router is build_search_router
     assert server.create_application is create_application
     assert server.MangaDownloader is MangaDownloader
+    assert server.run_search_cli is run_search_cli
+    assert server.run_download_cli is run_download_cli
+    assert server.log_startup_summary is log_startup_summary
+    assert server.list_supported_platforms is list_supported_platforms
 
 
 def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
@@ -108,6 +123,34 @@ def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
         importlib.reload(server)
 
 
+def test_server_configures_logging_before_crawler_imports(monkeypatch):
+    original_import = builtins.__import__
+    events = []
+    state = {"configured": False}
+
+    def fake_configure_server_logging(name):
+        state["configured"] = True
+        events.append(("configure", name))
+        return server.logger
+
+    def tracking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("crawlers"):
+            events.append(("crawlers", name, state["configured"]))
+        return original_import(name, globals, locals, fromlist, level)
+
+    try:
+        with monkeypatch.context() as patch:
+            patch.setattr(services.runtime, "configure_server_logging", fake_configure_server_logging)
+            patch.setattr(builtins, "__import__", tracking_import)
+            importlib.reload(server)
+    finally:
+        importlib.reload(server)
+
+    crawler_events = [event for event in events if event[0] == "crawlers"]
+    assert crawler_events
+    assert crawler_events[0][2] is True
+
+
 create_app = server.create_app
 
 
@@ -120,3 +163,57 @@ def test_create_app_registers_core_routes():
     assert "/api/search" in routes
     assert "/api/parse" in routes
     assert "/api/auth/login" in routes
+
+
+def test_server_main_delegates_to_runtime_entrypoint(monkeypatch, tmp_path):
+    sentinel_app = object()
+    sentinel_config = object()
+    sentinel_downloads_dir = tmp_path / "downloads"
+    sentinel_runtime = SimpleNamespace(
+        tasks={},
+        task_last_sse_state={},
+        state_lock=object(),
+        browser_pool={},
+        browser_pool_lock=object(),
+        download_queue={},
+        download_queue_priority={},
+        download_queue_lock=object(),
+    )
+    captured = {}
+
+    monkeypatch.setattr(
+        services.runtime,
+        "initialize_server_state",
+        lambda **kwargs: (sentinel_config, sentinel_runtime, sentinel_downloads_dir),
+    )
+    monkeypatch.setattr(
+        services.lifecycle,
+        "create_server_lifecycle",
+        lambda **kwargs: (object(), object(), object(), object()),
+    )
+    monkeypatch.setattr(
+        services.bootstrap,
+        "create_server_application",
+        lambda **kwargs: sentinel_app,
+    )
+
+    def fake_run_entrypoint(**kwargs):
+        captured.update(kwargs)
+        return 7
+
+    monkeypatch.setattr(services.runtime, "run_entrypoint", fake_run_entrypoint)
+
+    with pytest.raises(SystemExit) as exc_info:
+        runpy.run_path(
+            str(Path(__file__).resolve().parents[2] / "server.py"),
+            run_name="__main__",
+        )
+
+    assert exc_info.value.code == 7
+    assert captured["argv"] is None
+    assert captured["app"] is sentinel_app
+    assert captured["config"] is sentinel_config
+    assert captured["downloads_dir"] == str(sentinel_downloads_dir)
+    assert captured["get_searcher"] is get_searcher
+    assert captured["search_all_platforms"] is search_all_platforms
+    assert captured["get_crawler_for_url"] is get_crawler_for_url

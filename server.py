@@ -5,9 +5,7 @@ FastAPI 后端 + SSE 进度推送
 支持多平台漫画下载
 """
 
-import asyncio
 import logging
-from pathlib import Path
 
 try:
     from fastapi import FastAPI
@@ -15,18 +13,17 @@ except ImportError:
     print("请先安装 fastapi: pip install fastapi uvicorn")
     exit(1)
 
-# 设置日志
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+from services.runtime import (
+    configure_server_logging,
+    initialize_server_state,
+    log_startup_summary,
+    prepare_server_environment,
+    run_download_cli,
+    run_entrypoint,
+    run_search_cli,
 )
 
-# 获取所有相关 logger
-logger = logging.getLogger(__name__)
-logging.getLogger("crawlers").setLevel(logging.INFO)
-logging.getLogger("crawlers.tencent").setLevel(logging.INFO)
-logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
+logger = configure_server_logging(__name__)
 
 # 导入爬虫模块
 from crawlers import (
@@ -64,19 +61,17 @@ from services.bootstrap import create_server_application
 from services.downloader import MangaDownloader, add_history_item
 from services.lifecycle import create_server_lifecycle
 from services.state import AppRuntime, DownloadTask, create_runtime
-from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
 
 # 导入配置管理
 import config
 
-# 加载配置
-CONFIG = config.get_config()
-
-
 # ============== 全局状态 ==============
 
-runtime = create_runtime()
+CONFIG, runtime, DOWNLOADS_DIR = initialize_server_state(
+    get_config=config.get_config,
+    create_runtime_fn=create_runtime,
+)
 
 # 兼容现有测试与调用方的模块级状态别名
 tasks = runtime.tasks
@@ -88,12 +83,10 @@ _download_queue = runtime.download_queue
 _download_queue_priority = runtime.download_queue_priority
 _download_queue_lock = runtime.download_queue_lock
 
-# 初始化数据库
-init_db()
-
-# 下载目录（从配置获取）
-DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
-DOWNLOADS_DIR.mkdir(exist_ok=True)
+prepare_server_environment(
+    init_db_fn=init_db,
+    downloads_dir=DOWNLOADS_DIR,
+)
 
 
 (
@@ -147,52 +140,15 @@ app = create_app()
 # ============== 启动 ==============
 
 if __name__ == "__main__":
-    import argparse
-    import uvicorn
-
-    parser = argparse.ArgumentParser(description="漫画下载器")
-    parser.add_argument("--search", "-s", help="搜索视频（按名称）")
-    parser.add_argument("--platform", "-p", help="搜索平台（tencent/iqiyi/youku/mango）")
-    parser.add_argument("--limit", "-l", type=int, default=10, help="搜索结果数量")
-    parser.add_argument("--download", "-d", help="下载视频（通过 URL）")
-    args = parser.parse_args()
-
-    if args.search:
-        raise SystemExit(
-            asyncio.run(
-                run_search_cli(
-                    keyword=args.search,
-                    platform=args.platform,
-                    limit=args.limit,
-                    get_searcher=get_searcher,
-                    search_all_platforms=search_all_platforms,
-                )
-            )
-        )
-
-    if args.download:
-        raise SystemExit(
-            asyncio.run(
-                run_download_cli(
-                    url=args.download,
-                    downloads_dir=str(DOWNLOADS_DIR),
-                    get_crawler_for_url=get_crawler,
-                )
-            )
-        )
-
-    log_startup_summary(
+    exit_code = run_entrypoint(
+        argv=None,
+        app=app,
         logger=logger,
         config=CONFIG,
-        platforms=list_supported_platforms(),
+        downloads_dir=str(DOWNLOADS_DIR),
+        get_searcher=get_searcher,
+        search_all_platforms=search_all_platforms,
+        get_crawler_for_url=get_crawler,
     )
-
-    # 启动配置监听器（热重载）
-    import config as server_config
-    server_config.start_config_watcher(
-        callback=lambda: logger.info("配置已热重载"),
-        interval=5.0
-    )
-    logger.info("配置热重载已启用")
-
-    uvicorn.run(app, host=CONFIG.host, port=CONFIG.port)
+    if exit_code is not None:
+        raise SystemExit(exit_code)

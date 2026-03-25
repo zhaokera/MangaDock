@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import config as app_config
+import logging
+from pathlib import Path
+
 from typing import Any, Callable
+
+
+def configure_server_logging(logger_name: str) -> Any:
+    """配置服务启动日志并返回模块 logger。"""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logger = logging.getLogger(logger_name)
+    logging.getLogger("crawlers").setLevel(logging.INFO)
+    logging.getLogger("crawlers.tencent").setLevel(logging.INFO)
+    logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
+    return logger
 
 
 def format_cli_search_results(results: list[Any]) -> str:
@@ -70,6 +90,124 @@ async def run_download_cli(
     except Exception as exc:
         print_fn(f"下载失败: {exc}")
         return 1
+
+
+def initialize_server_state(
+    *,
+    get_config: Callable[[], Any] = app_config.get_config,
+    create_runtime_fn: Callable[[], Any],
+) -> tuple[Any, Any, Path]:
+    """初始化服务配置、运行时和下载目录路径。"""
+    config = get_config()
+    runtime = create_runtime_fn()
+    downloads_dir = Path(config.download.output_dir)
+    return config, runtime, downloads_dir
+
+
+def prepare_server_environment(
+    *,
+    init_db_fn: Callable[[], None],
+    downloads_dir: Path,
+) -> None:
+    """执行数据库初始化和下载目录准备。"""
+    init_db_fn()
+    downloads_dir.mkdir(exist_ok=True)
+
+
+def build_cli_parser() -> argparse.ArgumentParser:
+    """构建 CLI 参数解析器。"""
+    parser = argparse.ArgumentParser(description="漫画下载器")
+    parser.add_argument("--search", "-s", help="搜索视频（按名称）")
+    parser.add_argument("--platform", "-p", help="搜索平台（tencent/iqiyi/youku/mango）")
+    parser.add_argument("--limit", "-l", type=int, default=10, help="搜索结果数量")
+    parser.add_argument("--download", "-d", help="下载视频（通过 URL）")
+    return parser
+
+
+def run_entrypoint(
+    *,
+    argv: list[str] | None,
+    app: Any,
+    logger: Any,
+    config: Any,
+    downloads_dir: str,
+    get_searcher: Any,
+    search_all_platforms: Any,
+    get_crawler_for_url: Any,
+    run_search: Callable[..., Any] = run_search_cli,
+    run_download: Callable[..., Any] = run_download_cli,
+    run_server_fn: Callable[..., None] | None = None,
+    asyncio_run: Callable[[Any], Any] = asyncio.run,
+) -> int | None:
+    """解析 CLI 参数并分发到搜索、下载或 Web 服务模式。"""
+    if run_server_fn is None:
+        run_server_fn = run_server
+    args = build_cli_parser().parse_args(argv)
+
+    if args.search:
+        return asyncio_run(
+            run_search(
+                keyword=args.search,
+                platform=args.platform,
+                limit=args.limit,
+                get_searcher=get_searcher,
+                search_all_platforms=search_all_platforms,
+            )
+        )
+
+    if args.download:
+        return asyncio_run(
+            run_download(
+                url=args.download,
+                downloads_dir=downloads_dir,
+                get_crawler_for_url=get_crawler_for_url,
+            )
+        )
+
+    run_server_fn(
+        app=app,
+        logger=logger,
+        config=config,
+    )
+    return None
+
+
+def run_server(
+    *,
+    app: Any,
+    logger: Any,
+    config: Any,
+    config_module: Any | None = None,
+    get_platforms: Callable[[], list[dict[str, Any]]] | None = None,
+    uvicorn_run: Callable[..., None] | None = None,
+    log_startup: Callable[..., None] | None = None,
+    watcher_interval: float = 5.0,
+) -> None:
+    """运行 Web 服务启动流程。"""
+    if config_module is None:
+        config_module = app_config
+    if get_platforms is None:
+        from services.platforms import list_supported_platforms
+
+        get_platforms = list_supported_platforms
+    if log_startup is None:
+        log_startup = log_startup_summary
+    if uvicorn_run is None:
+        import uvicorn
+
+        uvicorn_run = uvicorn.run
+    platforms = get_platforms()
+    log_startup(
+        logger=logger,
+        config=config,
+        platforms=platforms,
+    )
+    config_module.start_config_watcher(
+        callback=lambda: logger.info("配置已热重载"),
+        interval=watcher_interval,
+    )
+    logger.info("配置热重载已启用")
+    uvicorn_run(app, host=config.host, port=config.port)
 
 
 def log_startup_summary(*, logger: Any, config: Any, platforms: list[dict[str, Any]]) -> None:
