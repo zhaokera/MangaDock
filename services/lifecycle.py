@@ -9,7 +9,7 @@ from typing import Any, Awaitable, Callable
 from services.state import AppRuntime
 
 
-BrowserPool = dict[str, dict[str, Any]]
+BrowserPool = dict[str, dict]
 AsyncLifecycleHook = Callable[[], Awaitable[None]]
 CleanupBrowserPool = Callable[..., Awaitable[Any]]
 CloseAllBrowsers = Callable[..., Awaitable[Any]]

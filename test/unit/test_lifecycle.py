@@ -26,7 +26,7 @@ def test_create_server_lifecycle_public_signature_is_typed():
     hints = get_type_hints(create_server_lifecycle)
 
     assert hints["runtime"] is AppRuntime
-    assert hints["browser_pool"] == dict[str, dict[str, Any]]
+    assert hints["browser_pool"] == dict[str, dict]
     assert hints["browser_pool_lock"] is asyncio.Lock
     assert hints["cleanup_browser_pool"] == Callable[..., Awaitable[Any]]
     assert hints["close_all_browsers"] == Callable[..., Awaitable[Any]]
