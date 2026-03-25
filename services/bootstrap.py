@@ -9,6 +9,7 @@ from typing import Any, Awaitable, Callable, Optional
 
 from fastapi import FastAPI
 
+from config import Config
 from crawlers import BaseCrawler, TaskRecord
 from crawlers.auth import AuthManager
 from crawlers.manga_search import BaseMangaSearcher
@@ -30,9 +31,9 @@ from services.state import AppRuntime
 BrowserPool = dict[str, dict[str, Any]]
 
 ReleaseBrowserForPlatform = Callable[[BrowserPool, str, float], None]
-GetConfig = Callable[[], Any]
+GetConfig = Callable[[], Config]
 GetTaskRecord = Callable[[str], Optional[TaskRecord]]
-GetTotalCount = Callable[..., int]
+GetTotalCount = Callable[[Optional[str], Optional[str]], int]
 GetCrawlerForUrl = Callable[[str], BaseCrawler]
 GetSearcher = Callable[[str], Optional[BaseSearcher]]
 GetMangaSearcher = Callable[[str], Optional[BaseMangaSearcher]]
@@ -41,7 +42,7 @@ GetResumeManager = Callable[[], ResumeManager]
 GetCrawlerByPlatform = Callable[[str], Optional[BaseCrawler]]
 InitBrowserForCrawler = Callable[..., Awaitable[None]]
 CreateDownloadTask = Callable[[str, str, str], Any]
-LifecycleHook = Callable[[], Any]
+AsyncLifecycleHook = Callable[[], Awaitable[None]]
 
 
 def create_server_application(
@@ -67,8 +68,8 @@ def create_server_application(
     release_browser_for_platform: ReleaseBrowserForPlatform,
     add_history_item: Callable[..., Any],
     create_download_task: CreateDownloadTask,
-    on_startup: LifecycleHook,
-    on_shutdown: LifecycleHook,
+    on_startup: AsyncLifecycleHook,
+    on_shutdown: AsyncLifecycleHook,
 ) -> FastAPI:
     def _history_max_items() -> int:
         value = get_config().history.max_items
