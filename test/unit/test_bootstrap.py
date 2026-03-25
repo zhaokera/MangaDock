@@ -1,7 +1,17 @@
 import logging
 from pathlib import Path
+from typing import Any, Callable, Optional, get_type_hints
 
+from fastapi import FastAPI
+
+import services.bootstrap as bootstrap
+from crawlers import BaseCrawler, TaskRecord
+from crawlers.auth import AuthManager
+from crawlers.manga_search import BaseMangaSearcher
+from crawlers.resume import ResumeManager
+from crawlers.search import BaseSearcher
 from services.bootstrap import create_server_application
+from services.state import AppRuntime
 from services.state import create_runtime
 
 
@@ -51,3 +61,24 @@ def test_create_server_application_registers_core_routes():
     assert "/api/auth/login" in routes
     assert "/api/auth/platforms" in routes
     assert "/api/resume/list" in routes
+
+
+def test_create_server_application_public_signature_stays_lightweight():
+    hints = get_type_hints(bootstrap.create_server_application)
+
+    assert hints["runtime"] is AppRuntime
+    assert hints["logger"] is logging.Logger
+    assert hints["downloads_dir"] is Path
+    assert hints["get_task_record"] == Callable[[str], Optional[TaskRecord]]
+    assert hints["delete_task_record"] == Callable[[str], bool]
+    assert hints["get_total_count"] == Callable[..., int]
+    assert hints["get_crawler_for_url"] == Callable[[str], BaseCrawler]
+    assert hints["get_searcher"] == Callable[[str], Optional[BaseSearcher]]
+    assert hints["get_manga_searcher"] == Callable[[str], Optional[BaseMangaSearcher]]
+    assert hints["get_auth_manager"] == Callable[[], AuthManager]
+    assert hints["get_resume_manager"] == Callable[[], ResumeManager]
+    assert hints["get_crawler_by_platform"] == Callable[[str], Optional[BaseCrawler]]
+    assert hints["create_download_task"] == Callable[[str, str, str], Any]
+    assert hints["on_startup"] == Callable[[], Any]
+    assert hints["on_shutdown"] == Callable[[], Any]
+    assert hints["return"] is FastAPI
