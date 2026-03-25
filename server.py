@@ -62,6 +62,7 @@ from services.browser_pool import (
 )
 from services.bootstrap import create_server_application
 from services.downloader import MangaDownloader, add_history_item
+from services.lifecycle import create_server_lifecycle
 from services.state import AppRuntime, DownloadTask, create_runtime
 from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 from services.platforms import list_supported_platforms
@@ -95,51 +96,21 @@ DOWNLOADS_DIR = Path(CONFIG.download.output_dir)
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 
-# ============== 启动 ==============
-async def start_browser_cleanup_scheduler():
-    """启动浏览器池清理调度器（后台任务）"""
-    cfg = config.get_config()
-    cleanup_interval = getattr(cfg.crawler, 'browser_cleanup_interval', 60)
-
-    runtime.browser_cleanup_task = asyncio.create_task(
-        schedule_browser_cleanup(
-            interval=cleanup_interval,
-            cleanup_browser_pool=lambda: cleanup_browser_pool(
-                browser_pool=_browser_pool,
-                browser_pool_lock=_browser_pool_lock,
-                get_config=config.get_config,
-                logger=logger,
-            ),
-            logger=logger,
-        )
-    )
-    logger.info(f"浏览器池清理调度器已启动 (interval={cleanup_interval}s)")
-
-
-async def stop_browser_cleanup_scheduler():
-    """停止浏览器池清理调度器"""
-    if runtime.browser_cleanup_task:
-        runtime.browser_cleanup_task.cancel()
-        try:
-            await runtime.browser_cleanup_task
-        except asyncio.CancelledError:
-            pass
-        runtime.browser_cleanup_task = None
-
-
-async def on_startup():
-    """应用启动时的初始化"""
-    await start_browser_cleanup_scheduler()
-
-
-async def on_shutdown():
-    """应用关闭时的清理"""
-    await close_all_browsers(
-        browser_pool=_browser_pool,
-        browser_pool_lock=_browser_pool_lock,
-        logger=logger,
-    )
-    await stop_browser_cleanup_scheduler()
+(
+    start_browser_cleanup_scheduler,
+    stop_browser_cleanup_scheduler,
+    on_startup,
+    on_shutdown,
+) = create_server_lifecycle(
+    runtime=runtime,
+    browser_pool=_browser_pool,
+    browser_pool_lock=_browser_pool_lock,
+    cleanup_browser_pool=cleanup_browser_pool,
+    close_all_browsers=close_all_browsers,
+    schedule_browser_cleanup=schedule_browser_cleanup,
+    get_config=config.get_config,
+    logger=logger,
+)
 
 
 def create_app() -> FastAPI:

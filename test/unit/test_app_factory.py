@@ -1,6 +1,9 @@
+import importlib
+
 from fastapi import FastAPI
 
 import server
+import services.lifecycle
 from routes.auth import build_auth_router
 from routes.downloads import build_download_router
 from routes.history import build_history_router
@@ -62,6 +65,36 @@ def test_server_preserves_assembly_compatibility_exports():
     assert server.build_search_router is build_search_router
     assert server.create_application is create_application
     assert server.MangaDownloader is MangaDownloader
+
+
+def test_server_lifecycle_exports_are_bound_from_lifecycle_factory(monkeypatch):
+    sentinel_start = object()
+    sentinel_stop = object()
+    sentinel_on_startup = object()
+    sentinel_on_shutdown = object()
+
+    def fake_create_server_lifecycle(**kwargs):
+        return (
+            sentinel_start,
+            sentinel_stop,
+            sentinel_on_startup,
+            sentinel_on_shutdown,
+        )
+
+    monkeypatch.setattr(
+        services.lifecycle,
+        "create_server_lifecycle",
+        fake_create_server_lifecycle,
+    )
+
+    try:
+        reloaded_server = importlib.reload(server)
+        assert reloaded_server.start_browser_cleanup_scheduler is sentinel_start
+        assert reloaded_server.stop_browser_cleanup_scheduler is sentinel_stop
+        assert reloaded_server.on_startup is sentinel_on_startup
+        assert reloaded_server.on_shutdown is sentinel_on_shutdown
+    finally:
+        importlib.reload(server)
 
 
 create_app = server.create_app
