@@ -1,14 +1,67 @@
 import sys
 from types import SimpleNamespace
+from typing import Any, Callable, Optional, get_type_hints
 
 from config import Config
 import services.platforms
 import services.runtime as runtime
+from services.runtime import build_cli_parser
+from services.runtime import build_runtime_aliases
+from services.runtime import build_server_entrypoint_kwargs
 from services.runtime import configure_server_logging
 from services.runtime import format_cli_search_results
 from services.runtime import initialize_server_state
+from services.runtime import prepare_server_environment
 from services.runtime import run_entrypoint
 from services.runtime import run_server
+from services.state import AppRuntime
+
+
+def test_runtime_helper_public_signatures_are_typed():
+    init_hints = get_type_hints(initialize_server_state)
+    prepare_hints = get_type_hints(prepare_server_environment)
+    run_entrypoint_hints = get_type_hints(run_entrypoint)
+    run_server_hints = get_type_hints(run_server)
+    logging_hints = get_type_hints(configure_server_logging)
+    parser_hints = get_type_hints(build_cli_parser)
+
+    assert logging_hints["logger_name"] is str
+    assert logging_hints["return"] is runtime.logging.Logger
+
+    alias_hints = get_type_hints(build_runtime_aliases)
+    assert alias_hints["runtime"] is AppRuntime
+    assert alias_hints["return"] is runtime.RuntimeAliases
+
+    assert init_hints["get_config"] == Callable[[], Config]
+    assert init_hints["create_runtime_fn"] == Callable[[], AppRuntime]
+    assert init_hints["return"] == tuple[Config, AppRuntime, runtime.Path]
+
+    assert prepare_hints["init_db_fn"] == Callable[[], None]
+    assert prepare_hints["downloads_dir"] is runtime.Path
+    assert prepare_hints["return"] is type(None)
+
+    assert parser_hints["return"] is runtime.argparse.ArgumentParser
+
+    entrypoint_builder_hints = get_type_hints(build_server_entrypoint_kwargs)
+    assert entrypoint_builder_hints["config"] is Config
+    assert entrypoint_builder_hints["downloads_dir"] is str
+    assert entrypoint_builder_hints["get_searcher"] == Callable[[str], Any]
+    assert entrypoint_builder_hints["search_all_platforms"] == Callable[[str, int], Any]
+    assert entrypoint_builder_hints["get_crawler_for_url"] == Callable[[str], Any]
+    assert entrypoint_builder_hints["return"] is runtime.ServerEntrypointKwargs
+
+    assert run_entrypoint_hints["argv"] == Optional[list[str]]
+    assert run_entrypoint_hints["config"] is Config
+    assert run_entrypoint_hints["downloads_dir"] is str
+    assert run_entrypoint_hints["get_searcher"] == Callable[[str], Any]
+    assert run_entrypoint_hints["search_all_platforms"] == Callable[[str, int], Any]
+    assert run_entrypoint_hints["get_crawler_for_url"] == Callable[[str], Any]
+    assert run_entrypoint_hints["return"] == Optional[int]
+
+    assert run_server_hints["logger"] is runtime.SupportsInfo
+    assert run_server_hints["config"] is Config
+    assert run_server_hints["watcher_interval"] is float
+    assert run_server_hints["return"] is type(None)
 
 
 def test_configure_server_logging_sets_expected_levels(monkeypatch):
@@ -49,6 +102,23 @@ def test_configure_server_logging_sets_expected_levels(monkeypatch):
     assert loggers["crawlers"].levels == [runtime.logging.INFO]
     assert loggers["crawlers.tencent"].levels == [runtime.logging.INFO]
     assert loggers["crawlers.iqiyi"].levels == [runtime.logging.INFO]
+
+
+def test_build_runtime_aliases_preserves_compatibility_names():
+    runtime_state = runtime.AppRuntime()
+
+    aliases = build_runtime_aliases(runtime_state)
+
+    assert aliases == {
+        "tasks": runtime_state.tasks,
+        "task_last_sse_state": runtime_state.task_last_sse_state,
+        "_state_lock": runtime_state.state_lock,
+        "_browser_pool": runtime_state.browser_pool,
+        "_browser_pool_lock": runtime_state.browser_pool_lock,
+        "_download_queue": runtime_state.download_queue,
+        "_download_queue_priority": runtime_state.download_queue_priority,
+        "_download_queue_lock": runtime_state.download_queue_lock,
+    }
 
 
 def test_initialize_server_state_loads_config_initializes_db_and_download_dir(tmp_path):
@@ -262,6 +332,36 @@ def test_run_entrypoint_starts_server_when_no_cli_mode():
             "config": cfg,
         }
     ]
+
+
+def test_build_server_entrypoint_kwargs_preserves_dependency_mapping():
+    app = object()
+    logger = object()
+    config = Config()
+    searcher_getter = object()
+    search_all = object()
+    crawler_getter = object()
+
+    kwargs = build_server_entrypoint_kwargs(
+        app=app,
+        logger=logger,
+        config=config,
+        downloads_dir="downloads",
+        get_searcher=searcher_getter,
+        search_all_platforms=search_all,
+        get_crawler_for_url=crawler_getter,
+    )
+
+    assert kwargs == {
+        "argv": None,
+        "app": app,
+        "logger": logger,
+        "config": config,
+        "downloads_dir": "downloads",
+        "get_searcher": searcher_getter,
+        "search_all_platforms": search_all,
+        "get_crawler_for_url": crawler_getter,
+    }
 
 
 def test_format_cli_search_results_renders_expected_lines():

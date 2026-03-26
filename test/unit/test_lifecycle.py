@@ -5,6 +5,7 @@ from typing import Any, Awaitable, Callable, get_type_hints
 
 import pytest
 
+from services.lifecycle import build_server_lifecycle_kwargs
 from services.lifecycle import create_server_lifecycle
 from services.state import AppRuntime, create_runtime
 
@@ -24,6 +25,7 @@ def _config_with_interval(interval: int = 60):
 
 def test_create_server_lifecycle_public_signature_is_typed():
     hints = get_type_hints(create_server_lifecycle)
+    builder_hints = get_type_hints(build_server_lifecycle_kwargs)
 
     assert hints["runtime"] is AppRuntime
     assert hints["browser_pool"] == dict[str, dict]
@@ -39,6 +41,48 @@ def test_create_server_lifecycle_public_signature_is_typed():
         Callable[[], Awaitable[None]],
         Callable[[], Awaitable[None]],
     ]
+    assert builder_hints["runtime"] is AppRuntime
+    assert builder_hints["browser_pool"] == dict[str, dict]
+    assert builder_hints["browser_pool_lock"] is asyncio.Lock
+    assert builder_hints["logger"] is logging.Logger
+    assert builder_hints["return"] is build_server_lifecycle_kwargs.__globals__["ServerLifecycleKwargs"]
+
+
+def test_build_server_lifecycle_kwargs_preserves_dependency_mapping():
+    runtime = create_runtime()
+    logger = logging.getLogger("test")
+
+    async def cleanup_browser_pool(**kwargs):
+        return None
+
+    async def close_all_browsers(**kwargs):
+        return None
+
+    async def schedule_browser_cleanup(**kwargs):
+        return None
+
+    def get_config():
+        return _config_with_interval()
+
+    kwargs = build_server_lifecycle_kwargs(
+        runtime=runtime,
+        browser_pool=runtime.browser_pool,
+        browser_pool_lock=runtime.browser_pool_lock,
+        cleanup_browser_pool=cleanup_browser_pool,
+        close_all_browsers=close_all_browsers,
+        schedule_browser_cleanup=schedule_browser_cleanup,
+        get_config=get_config,
+        logger=logger,
+    )
+
+    assert kwargs["runtime"] is runtime
+    assert kwargs["browser_pool"] is runtime.browser_pool
+    assert kwargs["browser_pool_lock"] is runtime.browser_pool_lock
+    assert kwargs["cleanup_browser_pool"] is cleanup_browser_pool
+    assert kwargs["close_all_browsers"] is close_all_browsers
+    assert kwargs["schedule_browser_cleanup"] is schedule_browser_cleanup
+    assert kwargs["get_config"] is get_config
+    assert kwargs["logger"] is logger
 
 
 @pytest.mark.asyncio

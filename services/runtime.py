@@ -8,10 +8,44 @@ import config as app_config
 import logging
 from pathlib import Path
 
-from typing import Any, Callable
+from typing import Any, Callable, Optional, Protocol, TypedDict
+
+from config import Config
+from services.state import AppRuntime
 
 
-def configure_server_logging(logger_name: str) -> Any:
+GetSearcher = Callable[[str], Any]
+SearchAllPlatforms = Callable[[str, int], Any]
+GetCrawlerForUrl = Callable[[str], Any]
+
+
+class SupportsInfo(Protocol):
+    def info(self, message: str) -> Any: ...
+
+
+class RuntimeAliases(TypedDict):
+    tasks: dict[str, Any]
+    task_last_sse_state: dict[str, dict]
+    _state_lock: Any
+    _browser_pool: dict[str, dict]
+    _browser_pool_lock: Any
+    _download_queue: dict[str, Any]
+    _download_queue_priority: dict[str, int]
+    _download_queue_lock: Any
+
+
+class ServerEntrypointKwargs(TypedDict):
+    argv: Optional[list[str]]
+    app: Any
+    logger: Any
+    config: Config
+    downloads_dir: str
+    get_searcher: GetSearcher
+    search_all_platforms: SearchAllPlatforms
+    get_crawler_for_url: GetCrawlerForUrl
+
+
+def configure_server_logging(logger_name: str) -> logging.Logger:
     """配置服务启动日志并返回模块 logger。"""
     logging.basicConfig(
         level=logging.INFO,
@@ -23,6 +57,20 @@ def configure_server_logging(logger_name: str) -> Any:
     logging.getLogger("crawlers.tencent").setLevel(logging.INFO)
     logging.getLogger("crawlers.iqiyi").setLevel(logging.INFO)
     return logger
+
+
+def build_runtime_aliases(runtime: AppRuntime) -> RuntimeAliases:
+    """Build legacy module-level aliases from AppRuntime."""
+    return {
+        "tasks": runtime.tasks,
+        "task_last_sse_state": runtime.task_last_sse_state,
+        "_state_lock": runtime.state_lock,
+        "_browser_pool": runtime.browser_pool,
+        "_browser_pool_lock": runtime.browser_pool_lock,
+        "_download_queue": runtime.download_queue,
+        "_download_queue_priority": runtime.download_queue_priority,
+        "_download_queue_lock": runtime.download_queue_lock,
+    }
 
 
 def format_cli_search_results(results: list[Any]) -> str:
@@ -94,9 +142,9 @@ async def run_download_cli(
 
 def initialize_server_state(
     *,
-    get_config: Callable[[], Any] = app_config.get_config,
-    create_runtime_fn: Callable[[], Any],
-) -> tuple[Any, Any, Path]:
+    get_config: Callable[[], Config] = app_config.get_config,
+    create_runtime_fn: Callable[[], AppRuntime],
+) -> tuple[Config, AppRuntime, Path]:
     """初始化服务配置、运行时和下载目录路径。"""
     config = get_config()
     runtime = create_runtime_fn()
@@ -124,21 +172,44 @@ def build_cli_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_entrypoint(
+def build_server_entrypoint_kwargs(
     *,
-    argv: list[str] | None,
     app: Any,
     logger: Any,
-    config: Any,
+    config: Config,
     downloads_dir: str,
-    get_searcher: Any,
-    search_all_platforms: Any,
-    get_crawler_for_url: Any,
+    get_searcher: GetSearcher,
+    search_all_platforms: SearchAllPlatforms,
+    get_crawler_for_url: GetCrawlerForUrl,
+) -> ServerEntrypointKwargs:
+    """Build a stable kwargs mapping for run_entrypoint()."""
+    return {
+        "argv": None,
+        "app": app,
+        "logger": logger,
+        "config": config,
+        "downloads_dir": downloads_dir,
+        "get_searcher": get_searcher,
+        "search_all_platforms": search_all_platforms,
+        "get_crawler_for_url": get_crawler_for_url,
+    }
+
+
+def run_entrypoint(
+    *,
+    argv: Optional[list[str]],
+    app: Any,
+    logger: Any,
+    config: Config,
+    downloads_dir: str,
+    get_searcher: GetSearcher,
+    search_all_platforms: SearchAllPlatforms,
+    get_crawler_for_url: GetCrawlerForUrl,
     run_search: Callable[..., Any] = run_search_cli,
     run_download: Callable[..., Any] = run_download_cli,
-    run_server_fn: Callable[..., None] | None = None,
+    run_server_fn: Optional[Callable[..., None]] = None,
     asyncio_run: Callable[[Any], Any] = asyncio.run,
-) -> int | None:
+) -> Optional[int]:
     """解析 CLI 参数并分发到搜索、下载或 Web 服务模式。"""
     if run_server_fn is None:
         run_server_fn = run_server
@@ -175,12 +246,12 @@ def run_entrypoint(
 def run_server(
     *,
     app: Any,
-    logger: Any,
-    config: Any,
-    config_module: Any | None = None,
-    get_platforms: Callable[[], list[dict[str, Any]]] | None = None,
-    uvicorn_run: Callable[..., None] | None = None,
-    log_startup: Callable[..., None] | None = None,
+    logger: SupportsInfo,
+    config: Config,
+    config_module: Optional[Any] = None,
+    get_platforms: Optional[Callable[[], list[dict[str, Any]]]] = None,
+    uvicorn_run: Optional[Callable[..., None]] = None,
+    log_startup: Optional[Callable[..., None]] = None,
     watcher_interval: float = 5.0,
 ) -> None:
     """运行 Web 服务启动流程。"""

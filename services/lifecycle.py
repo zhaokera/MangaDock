@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, TypedDict
 
 from services.state import AppRuntime
 
@@ -21,6 +21,41 @@ LifecycleHooks = tuple[
     AsyncLifecycleHook,
     AsyncLifecycleHook,
 ]
+
+
+class ServerLifecycleKwargs(TypedDict):
+    runtime: AppRuntime
+    browser_pool: BrowserPool
+    browser_pool_lock: asyncio.Lock
+    cleanup_browser_pool: CleanupBrowserPool
+    close_all_browsers: CloseAllBrowsers
+    schedule_browser_cleanup: ScheduleBrowserCleanup
+    get_config: GetConfig
+    logger: logging.Logger
+
+
+def build_server_lifecycle_kwargs(
+    *,
+    runtime: AppRuntime,
+    browser_pool: BrowserPool,
+    browser_pool_lock: asyncio.Lock,
+    cleanup_browser_pool: CleanupBrowserPool,
+    close_all_browsers: CloseAllBrowsers,
+    schedule_browser_cleanup: ScheduleBrowserCleanup,
+    get_config: GetConfig,
+    logger: logging.Logger,
+) -> ServerLifecycleKwargs:
+    """Build a stable kwargs mapping for create_server_lifecycle()."""
+    return {
+        "runtime": runtime,
+        "browser_pool": browser_pool,
+        "browser_pool_lock": browser_pool_lock,
+        "cleanup_browser_pool": cleanup_browser_pool,
+        "close_all_browsers": close_all_browsers,
+        "schedule_browser_cleanup": schedule_browser_cleanup,
+        "get_config": get_config,
+        "logger": logger,
+    }
 
 
 def create_server_lifecycle(

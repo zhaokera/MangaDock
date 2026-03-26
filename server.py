@@ -14,6 +14,8 @@ except ImportError:
     exit(1)
 
 from services.runtime import (
+    build_server_entrypoint_kwargs,
+    build_runtime_aliases,
     configure_server_logging,
     initialize_server_state,
     log_startup_summary,
@@ -58,7 +60,9 @@ from services.browser_pool import (
     schedule_browser_cleanup,
 )
 from services.bootstrap import create_server_application
+from services.bootstrap import build_server_application_kwargs
 from services.downloader import MangaDownloader, add_history_item
+from services.lifecycle import build_server_lifecycle_kwargs
 from services.lifecycle import create_server_lifecycle
 from services.state import AppRuntime, DownloadTask, create_runtime
 from services.platforms import list_supported_platforms
@@ -74,14 +78,7 @@ CONFIG, runtime, DOWNLOADS_DIR = initialize_server_state(
 )
 
 # 兼容现有测试与调用方的模块级状态别名
-tasks = runtime.tasks
-task_last_sse_state = runtime.task_last_sse_state
-_state_lock = runtime.state_lock
-_browser_pool = runtime.browser_pool
-_browser_pool_lock = runtime.browser_pool_lock
-_download_queue = runtime.download_queue
-_download_queue_priority = runtime.download_queue_priority
-_download_queue_lock = runtime.download_queue_lock
+globals().update(build_runtime_aliases(runtime))
 
 prepare_server_environment(
     init_db_fn=init_db,
@@ -95,19 +92,21 @@ prepare_server_environment(
     on_startup,
     on_shutdown,
 ) = create_server_lifecycle(
-    runtime=runtime,
-    browser_pool=_browser_pool,
-    browser_pool_lock=_browser_pool_lock,
-    cleanup_browser_pool=cleanup_browser_pool,
-    close_all_browsers=close_all_browsers,
-    schedule_browser_cleanup=schedule_browser_cleanup,
-    get_config=config.get_config,
-    logger=logger,
+    **build_server_lifecycle_kwargs(
+        runtime=runtime,
+        browser_pool=_browser_pool,
+        browser_pool_lock=_browser_pool_lock,
+        cleanup_browser_pool=cleanup_browser_pool,
+        close_all_browsers=close_all_browsers,
+        schedule_browser_cleanup=schedule_browser_cleanup,
+        get_config=config.get_config,
+        logger=logger,
+    )
 )
 
 
 def create_app() -> FastAPI:
-    return create_server_application(
+    return create_server_application(**build_server_application_kwargs(
         runtime=runtime,
         logger=logger,
         downloads_dir=DOWNLOADS_DIR,
@@ -131,7 +130,7 @@ def create_app() -> FastAPI:
         create_download_task=DownloadTask,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-    )
+    ))
 
 
 app = create_app()
@@ -140,8 +139,7 @@ app = create_app()
 # ============== 启动 ==============
 
 if __name__ == "__main__":
-    exit_code = run_entrypoint(
-        argv=None,
+    exit_code = run_entrypoint(**build_server_entrypoint_kwargs(
         app=app,
         logger=logger,
         config=CONFIG,
@@ -149,6 +147,6 @@ if __name__ == "__main__":
         get_searcher=get_searcher,
         search_all_platforms=search_all_platforms,
         get_crawler_for_url=get_crawler,
-    )
+    ))
     if exit_code is not None:
         raise SystemExit(exit_code)
