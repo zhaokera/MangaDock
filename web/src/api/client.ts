@@ -1,6 +1,7 @@
 import type { ContentType } from '../lib/contentType';
 
 const API_BASE = '/api';
+const JSON_HEADERS = { 'Content-Type': 'application/json' } as const;
 
 export interface Platform {
   name: string;
@@ -40,52 +41,20 @@ export interface HistoryItem {
   created_at: string;
 }
 
-// 获取支持的平台列表
-export async function getPlatforms(): Promise<{ platforms: Platform[] }> {
-  const response = await fetch(`${API_BASE}/platforms`);
-  return response.json();
-}
-
-// 解析 URL
-export async function parseUrl(url: string): Promise<{
+export interface ParseUrlResponse {
   platform: string;
   platform_name: string;
   comic_id: string;
   episode_id: string;
   url: string;
-}> {
-  const response = await fetch(`${API_BASE}/parse`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url })
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '解析失败');
-  }
-
-  return response.json();
 }
 
-// 开始下载
-export async function startDownload(url: string): Promise<{ task_id: string; platform: string }> {
-  const response = await fetch(`${API_BASE}/download`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url })
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '启动下载失败');
-  }
-
-  return response.json();
+export interface DownloadStartResponse {
+  task_id: string;
+  platform: string;
 }
 
-// 批量下载
-export async function startBatchDownload(urls: string[]): Promise<{
+export interface BatchDownloadResponse {
   total: number;
   success: number;
   failed: number;
@@ -96,30 +65,72 @@ export async function startBatchDownload(urls: string[]): Promise<{
     platform?: string;
     error?: string;
   }>;
-}> {
-  const response = await fetch(`${API_BASE}/batch-download`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ urls })
-  });
+}
 
+type ApiErrorPayload = {
+  detail?: string;
+};
+
+async function parseApiError(response: Response, fallbackMessage: string): Promise<Error> {
+  try {
+    const error = (await response.json()) as ApiErrorPayload;
+    return new Error(error.detail || fallbackMessage);
+  } catch {
+    return new Error(fallbackMessage);
+  }
+}
+
+async function requestJson<T>(url: string, init?: RequestInit, fallbackMessage?: string): Promise<T> {
+  const response = await fetch(url, init);
   if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '批量下载失败');
+    throw await parseApiError(response, fallbackMessage || '请求失败');
   }
 
-  return response.json();
+  return response.json() as Promise<T>;
+}
+
+async function requestVoid(url: string, init: RequestInit, fallbackMessage: string): Promise<void> {
+  const response = await fetch(url, init);
+  if (!response.ok) {
+    throw await parseApiError(response, fallbackMessage);
+  }
+}
+
+// 获取支持的平台列表
+export async function getPlatforms(): Promise<{ platforms: Platform[] }> {
+  return requestJson<{ platforms: Platform[] }>(`${API_BASE}/platforms`);
+}
+
+// 解析 URL
+export async function parseUrl(url: string): Promise<ParseUrlResponse> {
+  return requestJson<ParseUrlResponse>(`${API_BASE}/parse`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ url }),
+  }, '解析失败');
+}
+
+// 开始下载
+export async function startDownload(url: string): Promise<DownloadStartResponse> {
+  return requestJson<DownloadStartResponse>(`${API_BASE}/download`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ url }),
+  }, '启动下载失败');
+}
+
+// 批量下载
+export async function startBatchDownload(urls: string[]): Promise<BatchDownloadResponse> {
+  return requestJson<BatchDownloadResponse>(`${API_BASE}/batch-download`, {
+    method: 'POST',
+    headers: JSON_HEADERS,
+    body: JSON.stringify({ urls }),
+  }, '批量下载失败');
 }
 
 // 获取任务状态
 export async function getTaskStatus(taskId: string): Promise<TaskStatus> {
-  const response = await fetch(`${API_BASE}/status/${taskId}`);
-
-  if (!response.ok) {
-    throw new Error('获取状态失败');
-  }
-
-  return response.json();
+  return requestJson(`${API_BASE}/status/${taskId}`, undefined, '获取状态失败');
 }
 
 // SSE 进度推送 - 带自动重连
@@ -183,32 +194,22 @@ export function getDownloadUrl(taskId: string): string {
 
 // 获取历史记录
 export async function getHistory(): Promise<{ history: HistoryItem[] }> {
-  const response = await fetch(`${API_BASE}/history`);
-  return response.json();
+  return requestJson<{ history: HistoryItem[] }>(`${API_BASE}/history`);
 }
 
 export async function deleteHistoryItem(taskId: string): Promise<void> {
-  const response = await fetch(`${API_BASE}/history/${taskId}`, {
+  return requestVoid(`${API_BASE}/history/${taskId}`, {
     method: 'DELETE',
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '删除历史失败');
-  }
+  }, '删除历史失败');
 }
 
 export async function clearHistory(platforms?: string[]): Promise<void> {
-  const response = await fetch(`${API_BASE}/history`, {
+  const hasPlatforms = Boolean(platforms && platforms.length > 0);
+  return requestVoid(`${API_BASE}/history`, {
     method: 'DELETE',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(platforms && platforms.length > 0 ? { platforms } : {}),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '清空历史失败');
-  }
+    headers: JSON_HEADERS,
+    body: JSON.stringify(hasPlatforms ? { platforms } : {}),
+  }, '清空历史失败');
 }
 
 // === 搜索 API ===
@@ -257,64 +258,44 @@ export interface MangaChapterCatalog {
 
 // 搜索视频/漫画
 export async function searchVideos(keyword: string, platform?: string, limit: number = 10): Promise<{ results: SearchResult[]; total: number; platform?: string }> {
-  const response = await fetch(`${API_BASE}/search`, {
+  return requestJson(`${API_BASE}/search`, {
     method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-    },
+    headers: JSON_HEADERS,
     body: JSON.stringify({
       keyword,
       platform,
       limit,
     }),
-  });
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '搜索失败');
-  }
-
-  return response.json();
+  }, '搜索失败');
 }
 
 export async function searchManga(keyword: string, platform: string, limit: number = 10): Promise<{ results: MangaSearchResult[]; total: number; platform?: string }> {
-  const response = await fetch(
+  return requestJson(
     `${API_BASE}/search/manga?${new URLSearchParams({
       keyword,
       platform,
       limit: String(limit),
     })}`,
+    undefined,
+    '搜索失败',
   );
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '搜索失败');
-  }
-
-  return response.json();
 }
 
 export async function getMangaChapters(url: string, platform: string): Promise<MangaChapterCatalog> {
-  const response = await fetch(
+  return requestJson(
     `${API_BASE}/manga/chapters?${new URLSearchParams({
       url,
       platform,
     })}`,
+    undefined,
+    '获取章节失败',
   );
-
-  if (!response.ok) {
-    const error = await response.json();
-    throw new Error(error.detail || '获取章节失败');
-  }
-
-  return response.json();
 }
 
 // 获取支持搜索的平台
 export async function getSearchPlatforms(): Promise<{ platforms: SearchPlatform[] }> {
   // 从 API 获取平台列表，标记支持搜索的平台
-  const response = await fetch(`${API_BASE}/platforms`);
-  const data: { platforms?: Platform[] } = await response.json();
+  const data = await requestJson<{ platforms?: Platform[] }>(`${API_BASE}/platforms`);
   const platforms = (data.platforms || []).filter((platform) => platform.type === 'video').map((p): SearchPlatform => ({
     ...p,
     type: p.type,
