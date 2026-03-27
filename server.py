@@ -14,18 +14,17 @@ except ImportError:
     exit(1)
 
 from services.runtime import (
+    build_server_compatibility_exports,
     build_server_entrypoint_kwargs,
     build_runtime_aliases,
     configure_server_logging,
     initialize_server_state,
-    log_startup_summary,
     prepare_server_environment,
-    run_download_cli,
     run_entrypoint,
-    run_search_cli,
 )
 
 logger = configure_server_logging(__name__)
+globals().update(build_server_compatibility_exports())
 
 # 导入爬虫模块
 from crawlers import (
@@ -43,15 +42,6 @@ from crawlers.resume import get_resume_manager
 from crawlers.search import search_all_platforms, get_searcher
 from crawlers.manga_search import get_manga_searcher
 from crawlers.registry import get_crawler_by_platform
-from routes.auth import build_auth_router
-from routes.downloads import build_download_router
-from routes.history import build_history_router
-from routes.parse import build_parse_router
-from routes.platforms import router as platforms_router
-from routes.queue import build_queue_router
-from routes.resume import build_resume_router
-from routes.search import build_search_router
-from services.app_factory import create_application
 from services.browser_pool import (
     cleanup_browser_pool,
     close_all_browsers,
@@ -59,13 +49,10 @@ from services.browser_pool import (
     release_browser_for_platform,
     schedule_browser_cleanup,
 )
-from services.bootstrap import create_server_application
-from services.bootstrap import build_server_application_kwargs
-from services.downloader import MangaDownloader, add_history_item
-from services.lifecycle import build_server_lifecycle_kwargs
-from services.lifecycle import create_server_lifecycle
-from services.state import AppRuntime, DownloadTask, create_runtime
-from services.platforms import list_supported_platforms
+from services.bootstrap import bind_server_application
+from services.downloader import add_history_item
+from services.lifecycle import bind_server_lifecycle
+from services.state import DownloadTask, create_runtime
 
 # 导入配置管理
 import config
@@ -91,22 +78,20 @@ prepare_server_environment(
     stop_browser_cleanup_scheduler,
     on_startup,
     on_shutdown,
-) = create_server_lifecycle(
-    **build_server_lifecycle_kwargs(
-        runtime=runtime,
-        browser_pool=_browser_pool,
-        browser_pool_lock=_browser_pool_lock,
-        cleanup_browser_pool=cleanup_browser_pool,
-        close_all_browsers=close_all_browsers,
-        schedule_browser_cleanup=schedule_browser_cleanup,
-        get_config=config.get_config,
-        logger=logger,
-    )
+) = bind_server_lifecycle(
+    runtime=runtime,
+    browser_pool=_browser_pool,
+    browser_pool_lock=_browser_pool_lock,
+    cleanup_browser_pool=cleanup_browser_pool,
+    close_all_browsers=close_all_browsers,
+    schedule_browser_cleanup=schedule_browser_cleanup,
+    get_config=config.get_config,
+    logger=logger,
 )
 
 
 def create_app() -> FastAPI:
-    return create_server_application(**build_server_application_kwargs(
+    return bind_server_application(
         runtime=runtime,
         logger=logger,
         downloads_dir=DOWNLOADS_DIR,
@@ -130,7 +115,7 @@ def create_app() -> FastAPI:
         create_download_task=DownloadTask,
         on_startup=on_startup,
         on_shutdown=on_shutdown,
-    ))
+    )
 
 
 app = create_app()

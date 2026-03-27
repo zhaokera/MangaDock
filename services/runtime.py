@@ -45,6 +45,24 @@ class ServerEntrypointKwargs(TypedDict):
     get_crawler_for_url: GetCrawlerForUrl
 
 
+class ServerCompatibilityExports(TypedDict):
+    AppRuntime: Any
+    build_auth_router: Any
+    build_download_router: Any
+    build_history_router: Any
+    build_parse_router: Any
+    platforms_router: Any
+    build_queue_router: Any
+    build_resume_router: Any
+    build_search_router: Any
+    create_application: Any
+    MangaDownloader: Any
+    run_search_cli: Any
+    run_download_cli: Any
+    log_startup_summary: Any
+    list_supported_platforms: Any
+
+
 def configure_server_logging(logger_name: str) -> logging.Logger:
     """配置服务启动日志并返回模块 logger。"""
     logging.basicConfig(
@@ -70,6 +88,39 @@ def build_runtime_aliases(runtime: AppRuntime) -> RuntimeAliases:
         "_download_queue": runtime.download_queue,
         "_download_queue_priority": runtime.download_queue_priority,
         "_download_queue_lock": runtime.download_queue_lock,
+    }
+
+
+def build_server_compatibility_exports() -> ServerCompatibilityExports:
+    """Build legacy server.py exports that are no longer wired locally."""
+    from routes.auth import build_auth_router
+    from routes.downloads import build_download_router
+    from routes.history import build_history_router
+    from routes.parse import build_parse_router
+    from routes.platforms import router as platforms_router
+    from routes.queue import build_queue_router
+    from routes.resume import build_resume_router
+    from routes.search import build_search_router
+    from services.app_factory import create_application
+    from services.downloader import MangaDownloader
+    from services.platforms import list_supported_platforms
+
+    return {
+        "AppRuntime": AppRuntime,
+        "build_auth_router": build_auth_router,
+        "build_download_router": build_download_router,
+        "build_history_router": build_history_router,
+        "build_parse_router": build_parse_router,
+        "platforms_router": platforms_router,
+        "build_queue_router": build_queue_router,
+        "build_resume_router": build_resume_router,
+        "build_search_router": build_search_router,
+        "create_application": create_application,
+        "MangaDownloader": MangaDownloader,
+        "run_search_cli": run_search_cli,
+        "run_download_cli": run_download_cli,
+        "log_startup_summary": log_startup_summary,
+        "list_supported_platforms": list_supported_platforms,
     }
 
 

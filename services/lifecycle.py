@@ -58,6 +58,32 @@ def build_server_lifecycle_kwargs(
     }
 
 
+def bind_server_lifecycle(
+    *,
+    runtime: AppRuntime,
+    browser_pool: BrowserPool,
+    browser_pool_lock: asyncio.Lock,
+    cleanup_browser_pool: CleanupBrowserPool,
+    close_all_browsers: CloseAllBrowsers,
+    schedule_browser_cleanup: ScheduleBrowserCleanup,
+    get_config: GetConfig,
+    logger: logging.Logger,
+) -> LifecycleHooks:
+    """Create server lifecycle hooks from the bound runtime dependencies."""
+    return create_server_lifecycle(
+        **build_server_lifecycle_kwargs(
+            runtime=runtime,
+            browser_pool=browser_pool,
+            browser_pool_lock=browser_pool_lock,
+            cleanup_browser_pool=cleanup_browser_pool,
+            close_all_browsers=close_all_browsers,
+            schedule_browser_cleanup=schedule_browser_cleanup,
+            get_config=get_config,
+            logger=logger,
+        )
+    )
+
+
 def create_server_lifecycle(
     *,
     runtime: AppRuntime,

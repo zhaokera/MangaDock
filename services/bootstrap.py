@@ -125,6 +125,62 @@ def build_server_application_kwargs(
     }
 
 
+def bind_server_application(
+    *,
+    runtime: AppRuntime,
+    logger: logging.Logger,
+    downloads_dir: Path,
+    get_config: GetConfig,
+    get_task_record: GetTaskRecord,
+    save_task_record: Callable[..., Any],
+    delete_task_record: Callable[[str], bool],
+    delete_history_tasks: Callable[..., Any],
+    get_history_tasks: Callable[..., Any],
+    get_total_count: GetTotalCount,
+    get_crawler_for_url: GetCrawlerForUrl,
+    get_searcher: GetSearcher,
+    search_all_platforms: Callable[..., Any],
+    get_manga_searcher: GetMangaSearcher,
+    get_auth_manager: GetAuthManager,
+    get_resume_manager: GetResumeManager,
+    get_crawler_by_platform: GetCrawlerByPlatform,
+    init_browser_for_crawler: InitBrowserForCrawler,
+    release_browser_for_platform: ReleaseBrowserForPlatform,
+    add_history_item: Callable[..., Any],
+    create_download_task: CreateDownloadTask,
+    on_startup: AsyncLifecycleHook,
+    on_shutdown: AsyncLifecycleHook,
+) -> FastAPI:
+    """Create the server application from project runtime dependencies."""
+    return create_server_application(
+        **build_server_application_kwargs(
+            runtime=runtime,
+            logger=logger,
+            downloads_dir=downloads_dir,
+            get_config=get_config,
+            get_task_record=get_task_record,
+            save_task_record=save_task_record,
+            delete_task_record=delete_task_record,
+            delete_history_tasks=delete_history_tasks,
+            get_history_tasks=get_history_tasks,
+            get_total_count=get_total_count,
+            get_crawler_for_url=get_crawler_for_url,
+            get_searcher=get_searcher,
+            search_all_platforms=search_all_platforms,
+            get_manga_searcher=get_manga_searcher,
+            get_auth_manager=get_auth_manager,
+            get_resume_manager=get_resume_manager,
+            get_crawler_by_platform=get_crawler_by_platform,
+            init_browser_for_crawler=init_browser_for_crawler,
+            release_browser_for_platform=release_browser_for_platform,
+            add_history_item=add_history_item,
+            create_download_task=create_download_task,
+            on_startup=on_startup,
+            on_shutdown=on_shutdown,
+        )
+    )
+
+
 def create_server_application(
     *,
     runtime: AppRuntime,

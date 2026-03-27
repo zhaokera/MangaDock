@@ -27,15 +27,15 @@ from services.platforms import list_supported_platforms
 from services.runtime import log_startup_summary, run_download_cli, run_search_cli
 
 
-def test_create_app_delegates_to_bootstrap_with_runtime_dependencies(monkeypatch):
+def test_create_app_delegates_to_bootstrap_binder_with_runtime_dependencies(monkeypatch):
     sentinel_app = FastAPI()
     captured = {}
 
-    def fake_create_server_application(**kwargs):
+    def fake_bind_server_application(**kwargs):
         captured.update(kwargs)
         return sentinel_app
 
-    monkeypatch.setattr(server, "create_server_application", fake_create_server_application)
+    monkeypatch.setattr(server, "bind_server_application", fake_bind_server_application)
 
     app = server.create_app()
 

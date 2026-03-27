@@ -13,6 +13,7 @@ from crawlers.manga_search import BaseMangaSearcher
 from crawlers.resume import ResumeManager
 from crawlers.search import BaseSearcher
 from services.bootstrap import build_server_application_kwargs
+from services.bootstrap import bind_server_application
 from services.bootstrap import create_server_application
 from services.state import AppRuntime
 from services.state import DownloadTask
@@ -162,3 +163,63 @@ def test_build_server_application_kwargs_preserves_dependency_mapping(tmp_path):
     assert kwargs["get_resume_manager"]() is resume_manager
     assert kwargs["on_startup"] is on_startup
     assert kwargs["on_shutdown"] is on_shutdown
+
+
+def test_bind_server_application_delegates_with_built_kwargs(tmp_path, monkeypatch):
+    runtime = create_runtime()
+    auth_manager = AuthManager(session_dir=str(tmp_path / "sessions"))
+    resume_manager = ResumeManager(resume_dir=str(tmp_path / "resumes"))
+    sentinel_app = FastAPI()
+    captured = {}
+
+    async def init_browser_for_crawler(**kwargs) -> None:
+        return None
+
+    async def add_history_item(*args, **kwargs) -> bool:
+        return True
+
+    async def on_startup() -> None:
+        return None
+
+    async def on_shutdown() -> None:
+        return None
+
+    def fake_create_server_application(**kwargs):
+        captured.update(kwargs)
+        return sentinel_app
+
+    monkeypatch.setattr(bootstrap, "create_server_application", fake_create_server_application)
+
+    app = bind_server_application(
+        runtime=runtime,
+        logger=logging.getLogger("test"),
+        downloads_dir=Path("downloads"),
+        get_config=Config,
+        get_task_record=lambda task_id: None,
+        save_task_record=lambda *args, **kwargs: None,
+        delete_task_record=lambda task_id: False,
+        delete_history_tasks=lambda: 0,
+        get_history_tasks=lambda limit: [],
+        get_total_count=lambda status=None, platform=None: 0,
+        get_crawler_for_url=lambda url: DummyCrawler(),
+        get_searcher=lambda platform: None,
+        search_all_platforms=lambda keyword, limit_per_platform: [],
+        get_manga_searcher=lambda platform: None,
+        get_auth_manager=lambda: auth_manager,
+        get_resume_manager=lambda: resume_manager,
+        get_crawler_by_platform=lambda platform: DummyCrawler(),
+        init_browser_for_crawler=init_browser_for_crawler,
+        release_browser_for_platform=lambda *args, **kwargs: None,
+        add_history_item=add_history_item,
+        create_download_task=lambda task_id, url, platform: DownloadTask(task_id, url, platform),
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+    )
+
+    assert app is sentinel_app
+    assert captured["runtime"] is runtime
+    assert captured["get_config"] is Config
+    assert captured["get_auth_manager"]() is auth_manager
+    assert captured["get_resume_manager"]() is resume_manager
+    assert captured["on_startup"] is on_startup
+    assert captured["on_shutdown"] is on_shutdown

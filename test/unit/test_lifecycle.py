@@ -6,6 +6,7 @@ from typing import Any, Awaitable, Callable, get_type_hints
 import pytest
 
 from services.lifecycle import build_server_lifecycle_kwargs
+from services.lifecycle import bind_server_lifecycle
 from services.lifecycle import create_server_lifecycle
 from services.state import AppRuntime, create_runtime
 
@@ -83,6 +84,52 @@ def test_build_server_lifecycle_kwargs_preserves_dependency_mapping():
     assert kwargs["schedule_browser_cleanup"] is schedule_browser_cleanup
     assert kwargs["get_config"] is get_config
     assert kwargs["logger"] is logger
+
+
+def test_bind_server_lifecycle_delegates_with_built_kwargs(monkeypatch):
+    runtime = create_runtime()
+    logger = logging.getLogger("test")
+    sentinel_hooks = (object(), object(), object(), object())
+    captured = {}
+
+    async def cleanup_browser_pool(**kwargs):
+        return None
+
+    async def close_all_browsers(**kwargs):
+        return None
+
+    async def schedule_browser_cleanup(**kwargs):
+        return None
+
+    def get_config():
+        return _config_with_interval()
+
+    def fake_create_server_lifecycle(**kwargs):
+        captured.update(kwargs)
+        return sentinel_hooks
+
+    monkeypatch.setattr("services.lifecycle.create_server_lifecycle", fake_create_server_lifecycle)
+
+    hooks = bind_server_lifecycle(
+        runtime=runtime,
+        browser_pool=runtime.browser_pool,
+        browser_pool_lock=runtime.browser_pool_lock,
+        cleanup_browser_pool=cleanup_browser_pool,
+        close_all_browsers=close_all_browsers,
+        schedule_browser_cleanup=schedule_browser_cleanup,
+        get_config=get_config,
+        logger=logger,
+    )
+
+    assert hooks is sentinel_hooks
+    assert captured["runtime"] is runtime
+    assert captured["browser_pool"] is runtime.browser_pool
+    assert captured["browser_pool_lock"] is runtime.browser_pool_lock
+    assert captured["cleanup_browser_pool"] is cleanup_browser_pool
+    assert captured["close_all_browsers"] is close_all_browsers
+    assert captured["schedule_browser_cleanup"] is schedule_browser_cleanup
+    assert captured["get_config"] is get_config
+    assert captured["logger"] is logger
 
 
 @pytest.mark.asyncio

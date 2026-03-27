@@ -5,7 +5,19 @@ from typing import Any, Callable, Optional, get_type_hints
 from config import Config
 import services.platforms
 import services.runtime as runtime
+from routes.auth import build_auth_router
+from routes.downloads import build_download_router
+from routes.history import build_history_router
+from routes.parse import build_parse_router
+from routes.platforms import router as platforms_router
+from routes.queue import build_queue_router
+from routes.resume import build_resume_router
+from routes.search import build_search_router
+from services.app_factory import create_application
+from services.downloader import MangaDownloader
+from services.platforms import list_supported_platforms
 from services.runtime import build_cli_parser
+from services.runtime import build_server_compatibility_exports
 from services.runtime import build_runtime_aliases
 from services.runtime import build_server_entrypoint_kwargs
 from services.runtime import configure_server_logging
@@ -24,6 +36,7 @@ def test_runtime_helper_public_signatures_are_typed():
     run_server_hints = get_type_hints(run_server)
     logging_hints = get_type_hints(configure_server_logging)
     parser_hints = get_type_hints(build_cli_parser)
+    compat_hints = get_type_hints(build_server_compatibility_exports)
 
     assert logging_hints["logger_name"] is str
     assert logging_hints["return"] is runtime.logging.Logger
@@ -41,6 +54,7 @@ def test_runtime_helper_public_signatures_are_typed():
     assert prepare_hints["return"] is type(None)
 
     assert parser_hints["return"] is runtime.argparse.ArgumentParser
+    assert compat_hints["return"] is runtime.ServerCompatibilityExports
 
     entrypoint_builder_hints = get_type_hints(build_server_entrypoint_kwargs)
     assert entrypoint_builder_hints["config"] is Config
@@ -119,6 +133,26 @@ def test_build_runtime_aliases_preserves_compatibility_names():
         "_download_queue_priority": runtime_state.download_queue_priority,
         "_download_queue_lock": runtime_state.download_queue_lock,
     }
+
+
+def test_build_server_compatibility_exports_preserves_legacy_bindings():
+    exports = build_server_compatibility_exports()
+
+    assert exports["AppRuntime"] is runtime.AppRuntime
+    assert exports["build_auth_router"] is build_auth_router
+    assert exports["build_download_router"] is build_download_router
+    assert exports["build_history_router"] is build_history_router
+    assert exports["build_parse_router"] is build_parse_router
+    assert exports["platforms_router"] is platforms_router
+    assert exports["build_queue_router"] is build_queue_router
+    assert exports["build_resume_router"] is build_resume_router
+    assert exports["build_search_router"] is build_search_router
+    assert exports["create_application"] is create_application
+    assert exports["MangaDownloader"] is MangaDownloader
+    assert exports["run_search_cli"] is runtime.run_search_cli
+    assert exports["run_download_cli"] is runtime.run_download_cli
+    assert exports["log_startup_summary"] is runtime.log_startup_summary
+    assert exports["list_supported_platforms"] is list_supported_platforms
 
 
 def test_initialize_server_state_loads_config_initializes_db_and_download_dir(tmp_path):
